@@ -34,6 +34,80 @@ Baidu Cloud-Phone Scale Ops  ──►  Async Python Engine  ──►  AI Agent
 
 ---
 
+## Request Lifecycle: End-to-End Flow
+
+> How does a single operation travel through the engine — from the moment an external caller (or AI agent) submits a `TaskContext`, to the final audited result?
+
+```mermaid
+flowchart TD
+    A["External Caller / AI Agent\nsubmits TaskContext"] --> B["ExecutionManager.execute()"]
+    B --> C{{"TraceID Assigned\n(UUIDv4)"}}
+    C --> D["CancellationToken\nregistered for trace_id"]
+    D --> E["SafetyGateway.check_operation()"]
+
+    E --> P1["Phase 1\nRisk Classification"]
+    P1 -->|"config.get_risk_profile(op)"| P1R{"Risk Level?"}
+
+    P1R -->|"LOW / MEDIUM\n(no verification)"| PASS
+    P1R -->|"HIGH / CRITICAL"| P2
+
+    P2["Phase 2\nIdentity Verification"]
+    P2 -->|"_idp_verify(operator, token)\n+ session cache TTL"| P2R{"Verified?"}
+    P2R -->|"No"| REJECT["IdentityVerificationError\n(non-retryable, logged)"]
+    P2R -->|"Yes"| P2C{"CRITICAL?"}
+
+    P2C -->|"No (HIGH only)"| PASS
+    P2C -->|"Yes"| P3
+
+    P3["Phase 3\nMFA Confirmation"]
+    P3 -->|"validate mfa_token"| P3R{"MFA OK?"}
+    P3R -->|"No / Missing"| REJECT
+    P3R -->|"Yes"| COOL["Cooldown\n(risk-level specific)"]
+    COOL --> PASS
+
+    PASS["All Phases Passed"] --> DISP
+
+    DISP["_dispatch(ctx, token)"] --> HANDLER
+
+    HANDLER["@handle_cloud_exceptions\nOp Handler"]
+
+    HANDLER -->|"success"| LOG_OK["Audit Log\ntrace=uuid | TASK DONE\n+ elapsed_ms"]
+    HANDLER -->|"TransientCloudError"| RETRY{"Retry?\nattempt < max"}
+    RETRY -->|"Yes"| BACKOFF["Exponential Backoff\ndelay = base × mult^n + jitter"] --> HANDLER
+    RETRY -->|"Exhausted"| LOG_FAIL
+
+    HANDLER -->|"cancel signal"| CP["raise_if_cancelled()"] --> LOG_CANCEL["Audit Log\ntrace=uuid | TASK CANCELLED\n+ reason"]
+
+    HANDLER -->|"PermanentError"| LOG_FAIL["Audit Log\ntrace=uuid | TASK FAILED"]
+
+    LOG_OK --> CLEANUP["CancellationToken\nremoved from registry"]
+    LOG_CANCEL --> CLEANUP
+    LOG_FAIL --> CLEANUP
+    CLEANUP --> DONE["Result / Error\nreturned to caller"]
+
+    style A fill:#EBF5FB,stroke:#2E86C1
+    style C fill:#FEF9C3,stroke:#D4AC0D
+    style P1 fill:#D5F5E3,stroke:#1E8449
+    style P2 fill:#FDEBD0,stroke:#CA6F1E
+    style P3 fill:#FADBD8,stroke:#922B21
+    style REJECT fill:#F5B7B1,stroke:#CB4335,color:#7B241C
+    style PASS fill:#ABEBC6,stroke:#1E8449,color:#145A32
+    style HANDLER fill:#D6EAF8,stroke:#1A5276
+    style BACKOFF fill:#FCF3CF,stroke:#B7950B
+    style LOG_OK fill:#D5F5E3,stroke:#1E8449
+    style LOG_CANCEL fill:#FDEBD0,stroke:#CA6F1E
+    style LOG_FAIL fill:#FADBD8,stroke:#922B21
+```
+
+The diagram above traces **every decision point** a request encounters. Notice:
+
+- **TraceID is stamped first** — before any business logic, ensuring even gateway rejections are fully auditable.
+- **Short-circuit on failure** — `IdentityVerificationError` is non-retryable and exits immediately; no operation handler is ever invoked.
+- **Retry only wraps the handler** — gateway checks are not repeated on transient retries, avoiding redundant IdP calls.
+- **Cleanup is in `finally`** — the CancellationToken is always deregistered, preventing memory leaks in long-running engine instances.
+
+---
+
 ## Key Architectural Features
 
 ### 1. Bounded Concurrency via `asyncio.Semaphore`
@@ -224,17 +298,38 @@ Where `jitter = delay × jitter_factor × random()` — drawn uniformly per atte
 
 ## Observability: TraceID Full-Chain Tracing
 
-Every task is assigned a **UUIDv4 `trace_id`** at `TaskContext` creation time. This ID propagates through every log line emitted during that task's lifecycle — from gateway phases to retry attempts to final audit records.
+Every task is assigned a **UUIDv4 `trace_id`** at `TaskContext` creation time. This ID propagates through every log line emitted during that task's lifecycle — from SafetyGateway phase transitions to retry attempts to final audit records.
 
-```
-2026-03-05 11:10:20,662 | INFO  | trace=f6540d51-5c00-4e2a-8820-71e5ef062e1c | SafetyGateway | Phase 1 complete | op='delete_node' risk='critical'
-2026-03-05 11:10:20,714 | INFO  | trace=f6540d51-5c00-4e2a-8820-71e5ef062e1c | SafetyGateway | Phase 2 passed — identity verified.
-2026-03-05 11:10:20,766 | INFO  | trace=f6540d51-5c00-4e2a-8820-71e5ef062e1c | SafetyGateway | Phase 3 passed — MFA confirmed.
-2026-03-05 11:10:30,971 | INFO  | trace=f6540d51-5c00-4e2a-8820-71e5ef062e1c | Op            | Node 'node-doom' deleted successfully.
-2026-03-05 11:10:30,971 | INFO  | trace=f6540d51-5c00-4e2a-8820-71e5ef062e1c | Engine        | TASK DONE | elapsed_ms=10309.1
-```
+### Live Terminal Output
 
-A single `grep trace=f6540d51` in Kibana or Grafana Loki reconstructs the **entire operation timeline** — across gateway phases, retries, and the final result — with no additional instrumentation required.
+Below is a real terminal capture from the engine's smoke test, showing four operations of increasing risk — each with its full SafetyGateway phase sequence and TraceID chain:
+
+<div align="center">
+
+<img src="docs/terminal-trace-log.svg" alt="Terminal log showing TraceID full-chain tracing across 4 operations with SafetyGateway Phase 1/2/3" width="100%" />
+
+</div>
+
+<br/>
+
+**What to look for in the screenshot above:**
+
+| Colour | Meaning | Example |
+|---|---|---|
+| <span style="color:#50FA7B">Green</span> | `INFO` — normal lifecycle event | `TASK START`, `Phase passed`, `TASK DONE` |
+| <span style="color:#F1FA8C">Yellow</span> | Identity verification initiated | `Phase 2 — identity verify \| risk='high'` |
+| <span style="color:#FF79C6">Pink</span> | CRITICAL operation section header | `=== delete_node (CRITICAL — identity + MFA required) ===` |
+| <span style="color:#FF5555">Red</span> | MFA challenge initiated (Phase 3) | `Phase 3 — MFA confirmation for CRITICAL op.` |
+| <span style="color:#FFB86C">Orange</span> | `WARNING` — cancellation / abort | `CancellationToken activated`, `TASK CANCELLED` |
+
+**Key observations:**
+
+- **`health_check` (LOW)** — Phase 1 only. No identity check, no cooldown. Cleared instantly.
+- **`restart_node` (HIGH)** — Phase 1 + Phase 2. Identity verification triggered at `timeout=15.0s`, verified, then 3s cooldown applied.
+- **`batch_update_devices` (MEDIUM → cancelled)** — Phase 1 passed, mid-flight `CancellationToken` fired, task aborted at the next `raise_if_cancelled()` checkpoint within ~1s.
+- **`delete_node` (CRITICAL)** — Full 3-phase pipeline: Phase 1 → Phase 2 (identity) → Phase 3 (MFA) → 10s cooldown → handler executes → `TASK DONE` at `elapsed_ms=10309.1`.
+
+Every single line carries the same `trace=f6540d51-…` UUID. A single `grep trace=f6540d51` in Kibana or Grafana Loki reconstructs the **entire operation timeline** with no additional APM instrumentation required.
 
 ```mermaid
 graph LR
@@ -368,7 +463,7 @@ flowchart TD
 
 ```bash
 # Clone and navigate
-git clone https://github.com/your-handle/cloud-ops-ai-agent.git
+git clone https://github.com/citizen204/cloud-ops-ai-agent.git
 cd cloud-ops-ai-agent
 
 # Install dependencies (Python 3.11+ required)
