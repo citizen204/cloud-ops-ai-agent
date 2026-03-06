@@ -2,6 +2,7 @@
 
 <div align="center">
 
+[![CI — Lint & Test](https://github.com/citizen204/cloud-ops-ai-agent/actions/workflows/python-app.yml/badge.svg)](https://github.com/citizen204/cloud-ops-ai-agent/actions/workflows/python-app.yml)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Asyncio](https://img.shields.io/badge/Asyncio-Native-00B4D8?style=for-the-badge&logo=python&logoColor=white)](https://docs.python.org/3/library/asyncio.html)
 [![Architecture](https://img.shields.io/badge/Architecture-Event--Driven-6C3483?style=for-the-badge&logo=apacheairflow&logoColor=white)]()
@@ -9,6 +10,7 @@
 [![Config](https://img.shields.io/badge/Config-Zero%20Hardcoding-27AE60?style=for-the-badge&logo=json&logoColor=white)]()
 [![Observability](https://img.shields.io/badge/Observability-TraceID%20%7C%20ELK%20Ready-F39C12?style=for-the-badge&logo=elastic&logoColor=white)]()
 [![RAG](https://img.shields.io/badge/RAG-Integration%20Ready-8E44AD?style=for-the-badge&logo=openai&logoColor=white)]()
+[![Tests](https://img.shields.io/badge/Tests-37%20passed-brightgreen?style=for-the-badge&logo=pytest&logoColor=white)]()
 [![License](https://img.shields.io/badge/License-MIT-lightgrey?style=for-the-badge)]()
 
 <br/>
