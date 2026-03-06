@@ -1,0 +1,25 @@
+# ──────────────────────────────────────────────────────────────
+# cloud-ops-ai-agent — Development / CI Dependencies
+# ──────────────────────────────────────────────────────────────
+# Install with:  pip install -r dev-requirements.txt
+# This file pulls in production deps automatically, then adds
+# the toolchain needed for testing, linting, formatting, and
+# static type analysis.
+# ──────────────────────────────────────────────────────────────
+
+# Production dependencies (always installed alongside dev tools)
+-r requirements.txt
+
+# ── Testing ──────────────────────────────────────────────────
+pytest==8.4.2
+pytest-asyncio==1.2.0
+
+# ── Linting ──────────────────────────────────────────────────
+flake8==7.3.0
+ruff==0.15.5
+
+# ── Formatting ───────────────────────────────────────────────
+black==25.11.0
+
+# ── Static Type Checking ─────────────────────────────────────
+mypy==1.19.1

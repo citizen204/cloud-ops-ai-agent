@@ -468,11 +468,17 @@ flowchart TD
 git clone https://github.com/citizen204/cloud-ops-ai-agent.git
 cd cloud-ops-ai-agent
 
-# Install dependencies (Python 3.11+ required)
+# Production only (minimal footprint for deployment)
 pip install -r requirements.txt
+
+# Development / CI (adds pytest, flake8, black, mypy, ruff)
+pip install -r dev-requirements.txt
 
 # Run the built-in smoke test (validates full pipeline end-to-end)
 python execution_manager.py
+
+# Run the full test suite
+pytest tests/ -v
 ```
 
 **Example: Programmatic usage**
