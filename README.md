@@ -9,6 +9,8 @@
 [![Safety](https://img.shields.io/badge/Safety-3--Phase%20Gateway-E74C3C?style=for-the-badge&logo=shield&logoColor=white)]()
 [![Config](https://img.shields.io/badge/Config-Zero%20Hardcoding-27AE60?style=for-the-badge&logo=json&logoColor=white)]()
 [![Observability](https://img.shields.io/badge/Observability-TraceID%20%7C%20ELK%20Ready-F39C12?style=for-the-badge&logo=elastic&logoColor=white)]()
+[![AWS](https://img.shields.io/badge/AWS-S3%20Log%20Persistence-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white)]()
+[![Prometheus](https://img.shields.io/badge/Metrics-Prometheus%20Format-E6522C?style=for-the-badge&logo=prometheus&logoColor=white)]()
 [![RAG](https://img.shields.io/badge/RAG-Integration%20Ready-8E44AD?style=for-the-badge&logo=openai&logoColor=white)]()
 [![Tests](https://img.shields.io/badge/Tests-56%20passed-brightgreen?style=for-the-badge&logo=pytest&logoColor=white)]()
 [![License](https://img.shields.io/badge/License-MIT-lightgrey?style=for-the-badge)]()
@@ -365,6 +367,82 @@ graph LR
 
 ---
 
+## Cloud-Native Log Persistence (AWS S3)
+
+The engine includes a built-in `S3LogUploader` that automatically persists batch execution audit logs to an S3 bucket after every `execute_batch()` completes. This is integrated with **AWS Academy Learner Lab** for cloud-native observability.
+
+```mermaid
+flowchart LR
+    EB["execute_batch()\ncompletes"] --> UL["S3LogUploader\n.upload_logs_to_s3()"]
+    UL --> S3["s3://bucket/logs/\n{YYYY/MM/DD}/{batch_id}.json"]
+    S3 --> ATH["Athena / S3 Select\n(date-partitioned queries)"]
+
+    subgraph Credentials["AWS Academy Learner Lab"]
+        AK["AWS_ACCESS_KEY_ID"]
+        SK["AWS_SECRET_ACCESS_KEY"]
+        ST["AWS_SESSION_TOKEN"]
+    end
+
+    Credentials -->|"os.getenv()  (no hardcoding)"| UL
+
+    style EB fill:#D6EAF8,stroke:#1A5276
+    style S3 fill:#FEF9C3,stroke:#D4AC0D
+    style Credentials fill:#FDEBD0,stroke:#CA6F1E
+```
+
+**Key design decisions:**
+
+- **Date-partitioned S3 keys** (`logs/2026/03/05/{batch_id}.json`) — enables efficient Athena queries without full-bucket scans.
+- **Lazy client construction** — `boto3` client is built at call time, picking up refreshed Learner Lab tokens without engine restart.
+- **Graceful degradation** — if `S3_LOG_BUCKET` is not set, upload is silently skipped; the engine never crashes due to missing AWS config.
+- **Thread-pool offload** — blocking `put_object` runs in `run_in_executor` to keep the asyncio event loop non-blocking.
+
+### Credential Verification Script
+
+A health-check utility at `scripts/verify_aws.py` validates Learner Lab credentials before running the engine:
+
+```bash
+python scripts/verify_aws.py
+```
+
+```
+  cloud-ops-ai-agent — AWS Credential Verifier
+  ──────────────────────────────────────────────
+
+  [INFO]  .env 已加载: /path/to/cloud-ops-ai-agent/.env
+  [INFO]  正在验证 AWS STS GetCallerIdentity ...
+
+  [OK]  AWS 凭证有效!
+
+  [INFO]  Account : 300994471550
+  [INFO]  Arn     : arn:aws:sts::300994471550:assumed-role/voclabs/user...
+  [INFO]  Region  : us-east-1
+  [INFO]  S3 Bucket : cloud-ops-ai-agent-logs
+```
+
+If the session token has expired, the script prints step-by-step instructions for refreshing credentials from the Learner Lab console.
+
+---
+
+## Async Metrics Registry (Prometheus Format)
+
+The `MetricsRegistry` singleton (`metrics_collector.py`) automatically tracks operational health in real time, coupled with every `ExecutionManager.execute()` call:
+
+| Metric | Type | Description |
+|---|---|---|
+| `cloudops_tasks_total` | Counter | Total tasks by `{operation, status}` (success / failure / cancelled) |
+| `cloudops_safety_interceptions_total` | Counter | SafetyGateway rejections by `{operation, risk_level}` |
+| `cloudops_task_duration_seconds` | Summary | Execution time with avg / min / max per operation |
+| `cloudops_active_tasks` | Gauge | Currently in-flight tasks |
+| `cloudops_uptime_seconds` | Gauge | Engine uptime since `MetricsRegistry` creation |
+
+```python
+# Retrieve a Prometheus-compatible text exposition at any time
+print(MetricsRegistry.get().to_prometheus_format())
+```
+
+---
+
 ## How It Aligns with My Baidu Cloud-Phone Internship
 
 The architectural decisions in this codebase map directly to engineering work delivered during the Baidu 红手指 (Cloud-Phone) internship:
@@ -437,7 +515,14 @@ flowchart TD
     subgraph Observability["Observability"]
         TLOG["_trace_logger\n(UUIDv4 per task)"]
         ELK["ELK / Loki\n(structured grep)"]
+        MR["MetricsRegistry\n(Prometheus format)"]
         TLOG --> ELK
+    end
+
+    subgraph Cloud["AWS Cloud (Learner Lab)"]
+        S3UL["S3LogUploader\n(async, boto3)"]
+        S3B["S3 Bucket\nlogs/{date}/{batch}.json"]
+        S3UL --> S3B
     end
 
     CLI -->|TaskContext| CE --> EM
@@ -450,6 +535,8 @@ flowchart TD
     TOKEN -.->|raise_if_cancelled| Handlers
     Handlers --> TLOG
     EM --> TLOG
+    EM -->|"record_*"| MR
+    EM -->|batch done| S3UL
 
     style H1 fill:#FADBD8,stroke:#922B21
     style H2 fill:#FDEBD0,stroke:#CA6F1E
@@ -457,6 +544,8 @@ flowchart TD
     style H4 fill:#D5F5E3,stroke:#1E8449
     style Gateway fill:#F9EBEA,stroke:#922B21
     style Config fill:#FDFEFE,stroke:#AAB7B8
+    style S3B fill:#FEF9C3,stroke:#D4AC0D
+    style MR fill:#FADBD8,stroke:#E6522C
 ```
 
 ---
@@ -473,6 +562,17 @@ pip install -r requirements.txt
 
 # Development / CI (adds pytest, flake8, black, mypy, ruff)
 pip install -r dev-requirements.txt
+
+# Configure AWS credentials (Learner Lab)
+cp .env.example .env
+# → Fill in AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN
+# → See .env.example for step-by-step instructions
+
+# Verify AWS credentials are valid
+python scripts/verify_aws.py
+
+# Create the S3 log bucket (one-time setup)
+aws s3 mb s3://cloud-ops-ai-agent-logs --region us-east-1
 
 # Run the built-in smoke test (validates full pipeline end-to-end)
 python execution_manager.py
@@ -531,9 +631,10 @@ All tunables live in `config.json`. Key sections:
 
 ## Roadmap
 
+- [x] **Prometheus Metrics** — `MetricsRegistry` singleton exposes `tasks_total`, `task_duration_seconds`, `safety_interceptions_total` as Prometheus-format counters/summaries.
+- [x] **AWS S3 Log Persistence** — `S3LogUploader` auto-uploads batch audit logs to S3 with date-partitioned keys, integrated with AWS Academy Learner Lab session tokens.
 - [ ] **RAG Integration** — Inject `rag_hint` context from a vector knowledge base into `TaskContext` before dispatch, enabling AI-guided operation selection and parameter validation.
 - [ ] **Circuit Breaker** — Wrap each operation handler with a per-target circuit breaker to prevent retries from amplifying a downstream outage.
-- [ ] **Prometheus Metrics** — Expose `tasks_total`, `task_duration_seconds`, `safety_violations_total` as Prometheus counters/histograms.
 - [ ] **OpenTelemetry Spans** — Propagate `trace_id` as an OTLP trace context for distributed tracing across microservice boundaries.
 - [ ] **gRPC Transport Adapter** — Replace mock `_idp_verify` and `_op_*` stubs with real gRPC service bindings.
 
