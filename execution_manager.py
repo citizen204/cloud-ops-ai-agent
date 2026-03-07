@@ -32,15 +32,20 @@ import asyncio
 import functools
 import json
 import logging
+import os
 import random
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum, auto
 from pathlib import Path
 from typing import (
     Any, Awaitable, Callable, Dict, List, Optional, Sequence, TypeVar,
 )
+
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 
 from metrics_collector import MetricsRegistry
 
@@ -637,6 +642,159 @@ class TaskContext:
 
 
 # ---------------------------------------------------------------------------
+# S3LogUploader — Integrated with AWS Academy Learner Lab for cloud-native observability.
+# ---------------------------------------------------------------------------
+
+
+class S3LogUploader:
+    """
+    Async-compatible S3 log uploader for audit trail persistence.
+
+    Integrated with AWS Academy Learner Lab for cloud-native observability.
+
+    Uploads structured, TraceID-stamped log payloads to an S3 bucket after
+    each batch execution completes.  This satisfies the cloud-phone fleet
+    management requirement of durable, queryable audit logs that survive
+    process restarts — critical when operating 10,000+ devices and needing
+    post-incident forensics across multiple batch windows.
+
+    AWS credentials are read exclusively from environment variables to
+    support the **temporary session tokens** issued by AWS Academy Learner
+    Lab.  No credentials are ever hard-coded or committed to version control.
+
+    Environment variables
+    ---------------------
+    AWS_ACCESS_KEY_ID       : Learner Lab access key
+    AWS_SECRET_ACCESS_KEY   : Learner Lab secret key
+    AWS_SESSION_TOKEN       : Learner Lab session token (required)
+    AWS_DEFAULT_REGION      : AWS region (defaults to ``us-east-1``)
+    S3_LOG_BUCKET           : Target S3 bucket name (required)
+    S3_LOG_PREFIX           : Key prefix inside the bucket (default ``logs/``)
+
+    Parameters
+    ----------
+    bucket : str | None
+        Override bucket name (falls back to ``S3_LOG_BUCKET`` env var).
+    prefix : str | None
+        Override key prefix (falls back to ``S3_LOG_PREFIX`` env var).
+    """
+
+    def __init__(
+        self,
+        bucket: Optional[str] = None,
+        prefix: Optional[str] = None,
+    ) -> None:
+        self._bucket = bucket or os.getenv("S3_LOG_BUCKET", "")
+        self._prefix = prefix or os.getenv("S3_LOG_PREFIX", "logs/")
+        self._region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+        self._enabled = bool(self._bucket)
+        self._client: Optional[Any] = None
+
+    def _get_client(self) -> Any:
+        """
+        Lazily construct the boto3 S3 client using Learner Lab credentials.
+
+        Credentials are sourced from ``os.getenv`` at call time so that a
+        token refresh (e.g. re-running the Learner Lab ``Start Lab`` flow)
+        is picked up without restarting the engine process.
+        """
+        # Integrated with AWS Academy Learner Lab for cloud-native observability.
+        return boto3.client(
+            "s3",
+            region_name=self._region,
+            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+            aws_session_token=os.getenv("AWS_SESSION_TOKEN"),
+        )
+
+    async def upload_logs_to_s3(
+        self,
+        batch_id: str,
+        results: List[Dict[str, Any]],
+        *,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """
+        Upload a batch execution log to S3 as a JSON document.
+
+        Integrated with AWS Academy Learner Lab for cloud-native observability.
+
+        The object key follows the pattern::
+
+            {prefix}{date}/{batch_id}.json
+
+        This partitioning by date enables efficient Athena / S3 Select queries
+        over historical batch logs without full-bucket scans.
+
+        Parameters
+        ----------
+        batch_id : str
+            Short identifier for this batch execution (8-char UUID prefix).
+        results : list[dict]
+            The per-task result records produced by ``execute_batch``.
+        extra_metadata : dict | None
+            Optional metadata merged into the top-level JSON envelope
+            (e.g. Prometheus snapshot, operator context).
+
+        Returns
+        -------
+        str | None
+            The full S3 key on success, or None if upload is disabled / failed.
+        """
+        if not self._enabled:
+            logger.info(
+                "S3LogUploader | upload skipped — S3_LOG_BUCKET not configured.",
+                extra={"trace_id": batch_id},
+            )
+            return None
+
+        now = datetime.now(timezone.utc)
+        date_partition = now.strftime("%Y/%m/%d")
+        key = f"{self._prefix}{date_partition}/{batch_id}.json"
+
+        payload = {
+            "batch_id": batch_id,
+            "uploaded_at": now.isoformat(),
+            "task_count": len(results),
+            "results": results,
+        }
+        if extra_metadata:
+            payload["metadata"] = extra_metadata
+
+        body = json.dumps(payload, indent=2, default=str)
+
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, self._put_object, key, body)
+            logger.info(
+                "S3LogUploader | uploaded s3://%s/%s (%d bytes)",
+                self._bucket,
+                key,
+                len(body),
+                extra={"trace_id": batch_id},
+            )
+            return key
+        except (BotoCoreError, ClientError) as exc:
+            logger.error(
+                "S3LogUploader | upload failed for batch=%s: %s",
+                batch_id,
+                exc,
+                extra={"trace_id": batch_id},
+            )
+            return None
+
+    def _put_object(self, key: str, body: str) -> None:
+        """Blocking S3 PutObject — executed in a thread-pool via run_in_executor."""
+        client = self._get_client()
+        client.put_object(
+            Bucket=self._bucket,
+            Key=key,
+            Body=body.encode("utf-8"),
+            ContentType="application/json",
+        )
+
+
+# ---------------------------------------------------------------------------
 # ExecutionManager — the central async orchestrator
 # ---------------------------------------------------------------------------
 
@@ -669,10 +827,12 @@ class ExecutionManager:
         config: AppConfig,
         gateway: Optional[SafetyGateway] = None,
         metrics: Optional[MetricsRegistry] = None,
+        s3_uploader: Optional[S3LogUploader] = None,
     ) -> None:
         self._config = config
         self._gateway = gateway or SafetyGateway(config)
         self._metrics = metrics or MetricsRegistry.get()
+        self._s3_uploader = s3_uploader or S3LogUploader()
         self._semaphore = asyncio.Semaphore(config.execution.batch_concurrency_limit)
         self._active_tokens: Dict[str, CancellationToken] = {}
 
@@ -848,6 +1008,20 @@ class ExecutionManager:
             success,
             len(contexts) - success,
         )
+
+        # Integrated with AWS Academy Learner Lab for cloud-native observability.
+        # Auto-upload batch audit logs to S3 with TraceID-keyed partitioning.
+        await self._s3_uploader.upload_logs_to_s3(
+            batch_id=batch_id,
+            results=results,
+            extra_metadata={
+                "total": len(contexts),
+                "success": success,
+                "failed_or_skipped": len(contexts) - success,
+                "fail_fast": fail_fast,
+            },
+        )
+
         return results
 
     def cancel_task(self, trace_id: str, reason: str = "operator cancelled") -> bool:

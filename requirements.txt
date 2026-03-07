@@ -12,5 +12,8 @@
 # Async HTTP client — real IdP / RAG endpoint calls in production
 aiohttp==3.13.3
 
+# AWS SDK — S3 log upload, Learner Lab session-token support
+boto3==1.42.63
+
 # Structured JSON-lines logging for ELK / Loki ingestion pipelines
 python-json-logger==4.0.0
