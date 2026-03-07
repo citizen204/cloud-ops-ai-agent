@@ -38,11 +38,7 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import (
-    Any, Awaitable, Callable, Dict, List, Optional, Sequence, TypeVar,
-)
-
-from metrics_collector import MetricsRegistry
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, TypeVar
 
 # ---------------------------------------------------------------------------
 # Logging bootstrap — structured single-line format for log-aggregation pipelines
@@ -668,11 +664,9 @@ class ExecutionManager:
         self,
         config: AppConfig,
         gateway: Optional[SafetyGateway] = None,
-        metrics: Optional[MetricsRegistry] = None,
     ) -> None:
         self._config = config
         self._gateway = gateway or SafetyGateway(config)
-        self._metrics = metrics or MetricsRegistry.get()
         self._semaphore = asyncio.Semaphore(config.execution.batch_concurrency_limit)
         self._active_tokens: Dict[str, CancellationToken] = {}
 
@@ -722,53 +716,32 @@ class ExecutionManager:
             ctx.operator_id,
             list(ctx.payload.keys()),
         )
-        await self._metrics.record_task_start()
 
         try:
             await self._gateway.check_operation(ctx.operation, ctx)
             result = await self._dispatch(ctx, token)
-
-            elapsed = ctx.elapsed_ms()
-            await self._metrics.record_task_success(ctx.operation, elapsed)
             tlog.info(
                 "TASK DONE  | op='%s' elapsed_ms=%.1f",
                 ctx.operation,
-                elapsed,
+                ctx.elapsed_ms(),
             )
             return result
 
         except TaskCancelledError:
-            elapsed = ctx.elapsed_ms()
-            await self._metrics.record_task_cancelled(ctx.operation, elapsed)
             tlog.warning(
                 "TASK CANCELLED | op='%s' elapsed_ms=%.1f reason='%s'",
                 ctx.operation,
-                elapsed,
+                ctx.elapsed_ms(),
                 token.reason,
             )
             raise
 
-        except SecurityViolationError:
-            elapsed = ctx.elapsed_ms()
-            risk = self._config.get_risk_level(ctx.operation) or "unknown"
-            await self._metrics.record_safety_interception(ctx.operation, risk)
-            await self._metrics.record_task_failure(ctx.operation, elapsed)
-            tlog.error(
-                "TASK INTERCEPTED | op='%s' risk='%s' elapsed_ms=%.1f",
-                ctx.operation,
-                risk,
-                elapsed,
-            )
-            raise
-
         except CloudOpsError as exc:
-            elapsed = ctx.elapsed_ms()
-            await self._metrics.record_task_failure(ctx.operation, elapsed)
             tlog.error(
                 "TASK FAILED | op='%s' error='%s' elapsed_ms=%.1f",
                 ctx.operation,
                 exc,
-                elapsed,
+                ctx.elapsed_ms(),
             )
             raise
 
@@ -1127,9 +1100,6 @@ async def _smoke_test() -> None:
     )
     for r in batch_results:
         print(" ", r)
-
-    print("\n=== Prometheus Metrics Snapshot ===")
-    print(MetricsRegistry.get().to_prometheus_format())
 
 
 if __name__ == "__main__":
