@@ -17,6 +17,7 @@ from execution_manager import (
     AppConfig,
     ExecutionManager,
     IdentityVerificationError,
+    S3LogUploader,
     TaskCancelledError,
     TaskContext,
 )
@@ -230,7 +231,8 @@ class TestIntegrationWithEngine:
     def engine(self) -> ExecutionManager:
         cfg = AppConfig(CONFIG_PATH)
         registry = MetricsRegistry.get()
-        return ExecutionManager(cfg, metrics=registry)
+        noop_s3 = S3LogUploader(bucket="")
+        return ExecutionManager(cfg, metrics=registry, s3_uploader=noop_s3)
 
     @pytest.mark.asyncio
     async def test_success_updates_metrics(

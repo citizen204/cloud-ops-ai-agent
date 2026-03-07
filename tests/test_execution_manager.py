@@ -21,6 +21,7 @@ from execution_manager import (
     ExecutionManager,
     IdentityVerificationError,
     PermanentCloudError,
+    S3LogUploader,
     SafetyGateway,
     SecurityViolationError,
     TaskCancelledError,
@@ -48,8 +49,14 @@ def gateway(config: AppConfig) -> SafetyGateway:
 
 
 @pytest.fixture
-def engine(config: AppConfig) -> ExecutionManager:
-    return ExecutionManager(config)
+def noop_s3() -> S3LogUploader:
+    """S3 uploader with no bucket configured — upload_logs_to_s3 becomes a no-op."""
+    return S3LogUploader(bucket="")
+
+
+@pytest.fixture
+def engine(config: AppConfig, noop_s3: S3LogUploader) -> ExecutionManager:
+    return ExecutionManager(config, s3_uploader=noop_s3)
 
 
 def _ctx(
