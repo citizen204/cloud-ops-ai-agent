@@ -1,63 +1,26 @@
 {
-  "app": {
-    "name": "cloud-ops-ai-agent",
-    "version": "2.0.0",
-    "environment": "production",
-    "log_level": "INFO"
+  "high_risk_operations": [
+    "delete_instance",
+    "scale_down_cluster",
+    "restart_production_service",
+    "deploy_to_production",
+    "wipe_storage_bucket",
+    "revoke_iam_permissions",
+    "terminate_database",
+    "flush_cache"
+  ],
+  "confirmation": {
+    "timeout_seconds": 30,
+    "prompt_template": "[HIGH RISK] Operation '{operation}' on resource '{resource}' requires confirmation. Type '{confirm_token}' to proceed: ",
+    "confirm_token": "CONFIRM"
   },
   "execution": {
-    "default_timeout_seconds": 30,
-    "long_task_timeout_seconds": 300,
-    "batch_concurrency_limit": 10,
-    "cancellation_check_interval_seconds": 0.5
+    "max_retries": 3,
+    "retry_delay_seconds": 2,
+    "task_timeout_seconds": 300
   },
-  "retry": {
-    "max_attempts": 3,
-    "base_backoff_seconds": 1.0,
-    "max_backoff_seconds": 60.0,
-    "backoff_multiplier": 2.0,
-    "jitter_factor": 0.1
-  },
-  "safety_gateway": {
-    "identity_verification_timeout_seconds": 15,
-    "session_token_ttl_seconds": 3600,
-    "mfa_required_for_critical": true
-  },
-  "risk_levels": {
-    "critical": {
-      "operations": ["delete_node", "wipe_device", "revoke_all_sessions", "destroy_cluster"],
-      "requires_identity_verification": true,
-      "requires_mfa": true,
-      "audit_log": true,
-      "cooldown_seconds": 10
-    },
-    "high": {
-      "operations": ["restart_node", "force_stop_process", "modify_network_policy", "scale_down"],
-      "requires_identity_verification": true,
-      "requires_mfa": false,
-      "audit_log": true,
-      "cooldown_seconds": 3
-    },
-    "medium": {
-      "operations": ["update_config", "rotate_credentials", "drain_node", "batch_update_devices"],
-      "requires_identity_verification": false,
-      "requires_mfa": false,
-      "audit_log": true,
-      "cooldown_seconds": 0
-    },
-    "low": {
-      "operations": ["get_status", "list_devices", "health_check", "collect_metrics"],
-      "requires_identity_verification": false,
-      "requires_mfa": false,
-      "audit_log": false,
-      "cooldown_seconds": 0
-    }
-  },
-  "rag_integration": {
-    "enabled": false,
-    "knowledge_base_url": "http://rag-service:8080/query",
-    "embedding_model": "text-embedding-3-small",
-    "top_k_results": 5,
-    "similarity_threshold": 0.75
+  "logging": {
+    "level": "INFO",
+    "audit_log_path": "logs/audit.log"
   }
 }

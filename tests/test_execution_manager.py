@@ -1,434 +1,326 @@
-"""
-Unit tests for execution_manager — Async Industrial Execution Engine.
+"""Unit tests for ExecutionManager.
 
-Covers: AppConfig, SafetyGateway (3-phase), CancellationToken,
-@handle_cloud_exceptions, ExecutionManager single/batch dispatch,
-and the typed exception hierarchy.
+Tests cover:
+  - Config loading (happy path and error cases).
+  - High-risk operation classification.
+  - Confirmation workflow (confirmed / rejected / timeout).
+  - Task termination (pre-action and mid-retry).
+  - Retry logic for transient failures.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
+import threading
+import time
 from pathlib import Path
-from typing import Any, Dict
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from execution_manager import (
-    AppConfig,
-    CancellationToken,
-    ExecutionManager,
-    IdentityVerificationError,
-    PermanentCloudError,
-    S3LogUploader,
-    SafetyGateway,
-    SecurityViolationError,
-    TaskCancelledError,
-    TaskContext,
-    TransientCloudError,
-    create_engine,
-    handle_cloud_exceptions,
+from cloud_ops_ai_agent.exceptions import (
+    ConfigLoadError,
+    ConfirmationRejectedError,
+    ConfirmationTimeoutError,
+    TaskTerminatedError,
+    TaskTimeoutError,
 )
+from cloud_ops_ai_agent.execution_manager import ExecutionManager, TaskStatus
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
+
+def _write_config(tmp_path: Path, overrides: dict | None = None) -> Path:
+    """Write a config.json to *tmp_path*, applying *overrides* to defaults."""
+    cfg: dict = {
+        "high_risk_operations": ["delete_instance", "wipe_storage_bucket"],
+        "confirmation": {
+            "timeout_seconds": 5,
+            "prompt_template": "Confirm '{operation}' on '{resource}' [{confirm_token}]: ",
+            "confirm_token": "CONFIRM",
+        },
+        "execution": {
+            "max_retries": 2,
+            "retry_delay_seconds": 0.01,
+            "task_timeout_seconds": 30,
+        },
+        "logging": {"level": "DEBUG", "audit_log_path": "logs/audit.log"},
+    }
+    if overrides:
+        for key, value in overrides.items():
+            if isinstance(value, dict) and isinstance(cfg.get(key), dict):
+                cfg[key].update(value)
+            else:
+                cfg[key] = value
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps(cfg), encoding="utf-8")
+    return p
 
 
-@pytest.fixture
-def config() -> AppConfig:
-    return AppConfig(str(CONFIG_PATH))
+@pytest.fixture()
+def config_file(tmp_path: Path) -> Path:
+    """Write a minimal valid config.json to a temp directory."""
+    return _write_config(tmp_path)
 
 
-@pytest.fixture
-def gateway(config: AppConfig) -> SafetyGateway:
-    return SafetyGateway(config)
-
-
-@pytest.fixture
-def noop_s3() -> S3LogUploader:
-    """S3 uploader with no bucket configured — upload_logs_to_s3 becomes a no-op."""
-    return S3LogUploader(bucket="")
-
-
-@pytest.fixture
-def engine(config: AppConfig, noop_s3: S3LogUploader) -> ExecutionManager:
-    return ExecutionManager(config, s3_uploader=noop_s3)
-
-
-def _ctx(
-    operation: str = "health_check",
-    *,
-    session_token: str = "valid-token",
-    mfa_token: str | None = None,
-    payload: Dict[str, Any] | None = None,
-) -> TaskContext:
-    return TaskContext(
-        operation=operation,
-        payload=payload or {},
-        operator_id="test-user",
-        session_token=session_token,
-        mfa_token=mfa_token,
-    )
-
-
-# ---------------------------------------------------------------------------
-# AppConfig
-# ---------------------------------------------------------------------------
-
-
-class TestAppConfig:
-    def test_loads_from_default_path(self, config: AppConfig) -> None:
-        assert config.app_name == "cloud-ops-ai-agent"
-        assert config.retry.max_attempts >= 1
-        assert config.execution.batch_concurrency_limit > 0
-
-    def test_risk_level_lookup(self, config: AppConfig) -> None:
-        assert config.get_risk_level("delete_node") == "critical"
-        assert config.get_risk_level("health_check") == "low"
-        assert config.get_risk_level("restart_node") == "high"
-        assert config.get_risk_level("nonexistent_op") is None
-
-    def test_risk_profile_lookup(self, config: AppConfig) -> None:
-        profile = config.get_risk_profile("delete_node")
-        assert profile is not None
-        assert profile.requires_identity_verification is True
-        assert profile.requires_mfa is True
-
-    def test_frozen_dataclasses(self, config: AppConfig) -> None:
-        with pytest.raises(AttributeError):
-            config.retry.max_attempts = 999  # type: ignore[misc]
-
-    def test_custom_config_path(self, tmp_path: Path) -> None:
-        custom = tmp_path / "custom.json"
-        raw = json.loads(CONFIG_PATH.read_text())
-        raw["app"]["name"] = "custom-app"
-        custom.write_text(json.dumps(raw))
-
-        cfg = AppConfig(str(custom))
-        assert cfg.app_name == "custom-app"
+@pytest.fixture()
+def manager(config_file: Path) -> ExecutionManager:
+    return ExecutionManager(config_path=str(config_file))
 
 
 # ---------------------------------------------------------------------------
-# Exception hierarchy
+# Config loading
 # ---------------------------------------------------------------------------
 
 
-class TestExceptions:
-    def test_transient_is_retryable(self) -> None:
-        exc = TransientCloudError("network blip", trace_id="t1")
-        assert exc.retryable is True
+class TestConfigLoading:
+    def test_loads_valid_config(self, manager: ExecutionManager) -> None:
+        assert "delete_instance" in manager.config.high_risk_operations
+        assert manager.config.max_retries == 2
 
-    def test_permanent_not_retryable(self) -> None:
-        exc = PermanentCloudError("bad request", trace_id="t2")
-        assert exc.retryable is False
+    def test_raises_on_missing_file(self, tmp_path: Path) -> None:
+        with pytest.raises(ConfigLoadError, match="File not found"):
+            ExecutionManager(config_path=str(tmp_path / "nonexistent.json"))
 
-    def test_security_inherits_permanent(self) -> None:
-        exc = SecurityViolationError("blocked")
-        assert isinstance(exc, PermanentCloudError)
+    def test_raises_on_invalid_json(self, tmp_path: Path) -> None:
+        bad = tmp_path / "bad.json"
+        bad.write_text("{not valid json", encoding="utf-8")
+        with pytest.raises(ConfigLoadError, match="Invalid JSON"):
+            ExecutionManager(config_path=str(bad))
 
-    def test_identity_inherits_security(self) -> None:
-        exc = IdentityVerificationError("mfa fail")
-        assert isinstance(exc, SecurityViolationError)
-
-    def test_cancelled_not_retryable(self) -> None:
-        exc = TaskCancelledError(trace_id="t3")
-        assert exc.retryable is False
-        assert "cancelled" in str(exc).lower()
-
-
-# ---------------------------------------------------------------------------
-# CancellationToken
-# ---------------------------------------------------------------------------
-
-
-class TestCancellationToken:
-    def test_initial_state(self) -> None:
-        token = CancellationToken("trace-1")
-        assert token.is_cancelled is False
-        assert token.reason is None
-
-    def test_cancel_sets_flag(self) -> None:
-        token = CancellationToken("trace-2")
-        token.cancel(reason="operator abort")
-        assert token.is_cancelled is True
-        assert token.reason == "operator abort"
-
-    def test_raise_if_cancelled(self) -> None:
-        token = CancellationToken("trace-3")
-        token.raise_if_cancelled()  # should not raise
-
-        token.cancel()
-        with pytest.raises(TaskCancelledError):
-            token.raise_if_cancelled()
-
-    def test_cancel_is_idempotent(self) -> None:
-        token = CancellationToken("trace-4")
-        token.cancel(reason="first")
-        token.cancel(reason="second")
-        assert token.reason == "first"  # first reason preserved
+    def test_raises_on_missing_key(self, tmp_path: Path) -> None:
+        incomplete = tmp_path / "incomplete.json"
+        incomplete.write_text(json.dumps({"high_risk_operations": []}), encoding="utf-8")
+        with pytest.raises(ConfigLoadError, match="Missing required key"):
+            ExecutionManager(config_path=str(incomplete))
 
 
 # ---------------------------------------------------------------------------
-# SafetyGateway
+# High-risk classification
 # ---------------------------------------------------------------------------
 
 
-class TestSafetyGateway:
-    @pytest.mark.asyncio
-    async def test_low_risk_no_verification(self, gateway: SafetyGateway) -> None:
-        ctx = _ctx("health_check")
-        await gateway.check_operation("health_check", ctx)
+class TestHighRiskClassification:
+    def test_known_high_risk_operation(self, manager: ExecutionManager) -> None:
+        assert manager.is_high_risk_operation("delete_instance") is True
 
-    @pytest.mark.asyncio
-    async def test_high_risk_requires_identity(self, gateway: SafetyGateway) -> None:
-        ctx = _ctx("restart_node", session_token="valid")
-        await gateway.check_operation("restart_node", ctx)
+    def test_safe_operation(self, manager: ExecutionManager) -> None:
+        assert manager.is_high_risk_operation("list_instances") is False
 
-    @pytest.mark.asyncio
-    async def test_high_risk_fails_without_token(
-        self, gateway: SafetyGateway
-    ) -> None:
-        ctx = _ctx("restart_node", session_token="")
-        with pytest.raises(IdentityVerificationError):
-            await gateway.check_operation("restart_node", ctx)
-
-    @pytest.mark.asyncio
-    async def test_critical_requires_mfa(self, gateway: SafetyGateway) -> None:
-        ctx = _ctx("delete_node", session_token="valid", mfa_token="123456")
-        await gateway.check_operation("delete_node", ctx)
-
-    @pytest.mark.asyncio
-    async def test_critical_fails_without_mfa(
-        self, gateway: SafetyGateway
-    ) -> None:
-        ctx = _ctx("delete_node", session_token="valid", mfa_token=None)
-        with pytest.raises(IdentityVerificationError, match="MFA"):
-            await gateway.check_operation("delete_node", ctx)
-
-    @pytest.mark.asyncio
-    async def test_unknown_op_defaults_high(
-        self, gateway: SafetyGateway
-    ) -> None:
-        ctx = _ctx("totally_unknown_op", session_token="valid")
-        await gateway.check_operation("totally_unknown_op", ctx)
+    def test_case_sensitive(self, manager: ExecutionManager) -> None:
+        assert manager.is_high_risk_operation("Delete_Instance") is False
 
 
 # ---------------------------------------------------------------------------
-# @handle_cloud_exceptions decorator
+# Confirmation workflow
 # ---------------------------------------------------------------------------
 
 
-class TestHandleCloudExceptions:
-    @pytest.mark.asyncio
-    async def test_success_passes_through(self, config: AppConfig) -> None:
-        class Fake:
-            _config = config
-
-            @handle_cloud_exceptions
-            async def do_work(self, ctx: TaskContext) -> str:
-                return "ok"
-
-        result = await Fake().do_work(_ctx())
+class TestConfirmationWorkflow:
+    def test_confirmed_operation_proceeds(self, manager: ExecutionManager) -> None:
+        action = MagicMock(return_value="ok")
+        with patch("builtins.input", return_value="CONFIRM"):
+            result = manager.execute_task(
+                operation="delete_instance",
+                resource="vm-1",
+                action=action,
+            )
         assert result == "ok"
+        action.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_transient_error_retried(self, config: AppConfig) -> None:
+    def test_rejected_confirmation_raises(self, manager: ExecutionManager) -> None:
+        action = MagicMock()
+        with patch("builtins.input", return_value="no"):
+            with pytest.raises(ConfirmationRejectedError):
+                manager.execute_task(
+                    operation="delete_instance",
+                    resource="vm-1",
+                    action=action,
+                )
+        action.assert_not_called()
+
+    def test_confirmation_timeout_raises(self, tmp_path: Path) -> None:
+        short_timeout_config = _write_config(
+            tmp_path, overrides={"confirmation": {"timeout_seconds": 1}}
+        )
+        mgr = ExecutionManager(config_path=str(short_timeout_config))
+
+        def _slow_input(_prompt: str) -> str:
+            time.sleep(5)
+            return "CONFIRM"
+
+        action = MagicMock()
+        with patch("builtins.input", side_effect=_slow_input):
+            with pytest.raises(ConfirmationTimeoutError):
+                mgr.execute_task(
+                    operation="delete_instance",
+                    resource="vm-2",
+                    action=action,
+                )
+        action.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Task termination
+# ---------------------------------------------------------------------------
+
+
+class TestTaskTermination:
+    def test_terminate_between_retries(self, manager: ExecutionManager) -> None:
+        """Cancel a task between retry attempts; TaskTerminatedError must propagate."""
+        # The action raises a transient error on the first attempt, then blocks.
+        # Once the first attempt finishes, the main thread cancels the task so
+        # the cancellation check at the top of the next retry fires.
+        barrier = threading.Barrier(2)
+        first_call = True
+
+        def _flaky_action():
+            nonlocal first_call
+            if first_call:
+                first_call = False
+                barrier.wait()       # signal: first attempt done
+                raise ConnectionError("transient")
+            return "ok"
+
+        task_id = "term-test-001"
+        exc_holder: list[Exception] = []
+
+        def _run() -> None:
+            try:
+                manager.execute_task(
+                    operation="list_instances",
+                    resource="all",
+                    action=_flaky_action,
+                    task_id=task_id,
+                )
+            except Exception as exc:  # pylint: disable=broad-except
+                exc_holder.append(exc)
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        barrier.wait()               # wait until first attempt raised
+        manager.terminate_task(task_id)
+        t.join(timeout=3)
+
+        assert len(exc_holder) == 1
+        assert isinstance(exc_holder[0], TaskTerminatedError)
+
+    def test_terminate_unknown_task_returns_false(
+        self, manager: ExecutionManager
+    ) -> None:
+        assert manager.terminate_task("ghost-task") is False
+
+    def test_terminate_completed_task_returns_false(
+        self, manager: ExecutionManager
+    ) -> None:
+        task_id = "done-task"
+        with patch("builtins.input", return_value="CONFIRM"):
+            manager.execute_task(
+                operation="list_instances",
+                resource="r",
+                action=lambda: None,
+                task_id=task_id,
+            )
+        assert manager.terminate_task(task_id) is False
+
+
+# ---------------------------------------------------------------------------
+# Retry logic
+# ---------------------------------------------------------------------------
+
+
+class TestRetryLogic:
+    def test_retries_on_transient_failure(self, manager: ExecutionManager) -> None:
         call_count = 0
 
-        class Fake:
-            _config = config
+        def _flaky_action():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise ConnectionError("transient")
+            return "recovered"
 
-            @handle_cloud_exceptions
-            async def do_work(self, ctx: TaskContext) -> str:
-                nonlocal call_count
-                call_count += 1
-                if call_count < 3:
-                    raise TransientCloudError("blip", trace_id=ctx.trace_id)
-                return "recovered"
-
-        result = await Fake().do_work(_ctx())
+        result = manager.execute_task(
+            operation="list_instances",
+            resource="r",
+            action=_flaky_action,
+        )
         assert result == "recovered"
         assert call_count == 3
 
-    @pytest.mark.asyncio
-    async def test_permanent_error_not_retried(self, config: AppConfig) -> None:
-        call_count = 0
-
-        class Fake:
-            _config = config
-
-            @handle_cloud_exceptions
-            async def do_work(self, ctx: TaskContext) -> str:
-                nonlocal call_count
-                call_count += 1
-                raise PermanentCloudError("fatal", trace_id=ctx.trace_id)
-
-        with pytest.raises(PermanentCloudError):
-            await Fake().do_work(_ctx())
-        assert call_count == 1
-
-    @pytest.mark.asyncio
-    async def test_cancelled_propagates_immediately(
-        self, config: AppConfig
+    def test_exhausted_retries_propagate_last_error(
+        self, manager: ExecutionManager
     ) -> None:
-        class Fake:
-            _config = config
+        def _always_fails():
+            raise ValueError("permanent failure")
 
-            @handle_cloud_exceptions
-            async def do_work(self, ctx: TaskContext) -> str:
-                raise TaskCancelledError(trace_id=ctx.trace_id)
+        with pytest.raises(ValueError, match="permanent failure"):
+            manager.execute_task(
+                operation="list_instances",
+                resource="r",
+                action=_always_fails,
+            )
 
-        with pytest.raises(TaskCancelledError):
-            await Fake().do_work(_ctx())
+    def test_timeout_raises_task_timeout_error(self, tmp_path: Path) -> None:
+        # Each action attempt sleeps 30 ms.  With a 60 ms total budget and
+        # many max_retries, the deadline fires before retries are exhausted.
+        tight_config = _write_config(
+            tmp_path,
+            overrides={"execution": {
+                "task_timeout_seconds": 0.06,
+                "max_retries": 10,
+                "retry_delay_seconds": 0.0,
+            }},
+        )
+        mgr = ExecutionManager(config_path=str(tight_config))
 
-    @pytest.mark.asyncio
-    async def test_unexpected_error_wrapped(self, config: AppConfig) -> None:
-        class Fake:
-            _config = config
+        def _slow_failing():
+            time.sleep(0.03)          # 30 ms each attempt → 2 attempts ≈ 60 ms
+            raise ConnectionError("transient")
 
-            @handle_cloud_exceptions
-            async def do_work(self, ctx: TaskContext) -> str:
-                raise RuntimeError("something weird")
-
-        with pytest.raises(PermanentCloudError, match="something weird"):
-            await Fake().do_work(_ctx())
+        with pytest.raises(TaskTimeoutError):
+            mgr.execute_task(
+                operation="list_instances",
+                resource="r",
+                action=_slow_failing,
+            )
 
 
 # ---------------------------------------------------------------------------
-# ExecutionManager — single task
+# Task registry
 # ---------------------------------------------------------------------------
 
 
-class TestExecutionManager:
-    @pytest.mark.asyncio
-    async def test_health_check(self, engine: ExecutionManager) -> None:
-        result = await engine.execute(_ctx("health_check"))
-        assert result["healthy"] is True
-        assert "latency_ms" in result
-
-    @pytest.mark.asyncio
-    async def test_restart_node(self, engine: ExecutionManager) -> None:
-        ctx = _ctx(
-            "restart_node",
-            session_token="valid",
-            payload={"node_id": "n1"},
-        )
-        result = await engine.execute(ctx)
-        assert result["restarted"] == "n1"
-
-    @pytest.mark.asyncio
-    async def test_delete_node_critical(self, engine: ExecutionManager) -> None:
-        ctx = _ctx(
-            "delete_node",
-            session_token="valid",
-            mfa_token="code",
-            payload={"node_id": "n-doom"},
-        )
-        result = await engine.execute(ctx)
-        assert result["deleted"] == "n-doom"
-
-    @pytest.mark.asyncio
-    async def test_delete_node_rejected_without_mfa(
-        self, engine: ExecutionManager
+class TestTaskRegistry:
+    def test_list_task_records_returns_submitted_tasks(
+        self, manager: ExecutionManager
     ) -> None:
-        ctx = _ctx(
-            "delete_node",
-            session_token="valid",
-            mfa_token=None,
-            payload={"node_id": "n-safe"},
+        manager.execute_task(
+            operation="list_instances",
+            resource="r",
+            action=lambda: "ok",
         )
-        with pytest.raises(IdentityVerificationError):
-            await engine.execute(ctx)
+        records = manager.list_task_records()
+        assert len(records) == 1
+        assert records[0].operation == "list_instances"
 
-    @pytest.mark.asyncio
-    async def test_collect_metrics(self, engine: ExecutionManager) -> None:
-        result = await engine.execute(_ctx("collect_metrics"))
-        assert "cpu_avg_pct" in result
-
-    @pytest.mark.asyncio
-    async def test_generic_fallback(self, engine: ExecutionManager) -> None:
-        ctx = _ctx("some_new_operation", session_token="valid")
-        result = await engine.execute(ctx)
-        assert result["status"] == "completed"
-
-
-# ---------------------------------------------------------------------------
-# ExecutionManager — cancellation
-# ---------------------------------------------------------------------------
-
-
-class TestCancellation:
-    @pytest.mark.asyncio
-    async def test_cancel_mid_batch_update(
-        self, engine: ExecutionManager
+    def test_cancel_flags_cleaned_up_after_completion(
+        self, manager: ExecutionManager
     ) -> None:
-        ctx = _ctx(
-            "batch_update_devices",
-            payload={"device_ids": [f"d-{i}" for i in range(20)]},
+        task_id = "cleanup-test"
+        manager.execute_task(
+            operation="list_instances",
+            resource="r",
+            action=lambda: None,
+            task_id=task_id,
         )
+        # _cancel_flags must be empty once the task reaches a terminal state.
+        assert task_id not in manager._cancel_flags  # noqa: SLF001
 
-        async def _cancel_soon() -> None:
-            await asyncio.sleep(0.3)
-            engine.cancel_task(ctx.trace_id, reason="test abort")
-
-        asyncio.create_task(_cancel_soon())
-        with pytest.raises(TaskCancelledError):
-            await engine.execute(ctx)
-
-    def test_cancel_nonexistent_trace(self, engine: ExecutionManager) -> None:
-        assert engine.cancel_task("nonexistent-trace") is False
-
-
-# ---------------------------------------------------------------------------
-# ExecutionManager — batch
-# ---------------------------------------------------------------------------
-
-
-class TestBatchExecution:
-    @pytest.mark.asyncio
-    async def test_batch_all_succeed(self, engine: ExecutionManager) -> None:
-        contexts = [
-            _ctx("health_check"),
-            _ctx("collect_metrics"),
-        ]
-        results = await engine.execute_batch(contexts)
-        assert len(results) == 2
-        assert all(r["status"] == "success" for r in results)
-
-    @pytest.mark.asyncio
-    async def test_batch_partial_failure(
-        self, engine: ExecutionManager
-    ) -> None:
-        contexts = [
-            _ctx("health_check"),
-            _ctx("delete_node", session_token="valid", mfa_token=None),
-        ]
-        results = await engine.execute_batch(contexts)
-        assert results[0]["status"] == "success"
-        assert results[1]["status"] == "error"
-
-    @pytest.mark.asyncio
-    async def test_batch_fail_fast(self, engine: ExecutionManager) -> None:
-        contexts = [
-            _ctx("delete_node", session_token="", mfa_token=None),
-            _ctx("health_check"),
-            _ctx("health_check"),
-        ]
-        results = await engine.execute_batch(contexts, fail_fast=True)
-        statuses = [r["status"] for r in results]
-        assert "error" in statuses
-
-
-# ---------------------------------------------------------------------------
-# Factory
-# ---------------------------------------------------------------------------
-
-
-class TestFactory:
-    def test_create_engine(self) -> None:
-        eng = create_engine(str(CONFIG_PATH))
-        assert isinstance(eng, ExecutionManager)
+    def test_config_is_immutable(self, manager: ExecutionManager) -> None:
+        from dataclasses import FrozenInstanceError
+        with pytest.raises(FrozenInstanceError):
+            manager.config.max_retries = 99  # type: ignore[misc]
