@@ -1,0 +1,26 @@
+{
+  "high_risk_operations": [
+    "delete_instance",
+    "scale_down_cluster",
+    "restart_production_service",
+    "deploy_to_production",
+    "wipe_storage_bucket",
+    "revoke_iam_permissions",
+    "terminate_database",
+    "flush_cache"
+  ],
+  "confirmation": {
+    "timeout_seconds": 30,
+    "prompt_template": "[HIGH RISK] Operation '{operation}' on resource '{resource}' requires confirmation. Type '{confirm_token}' to proceed: ",
+    "confirm_token": "CONFIRM"
+  },
+  "execution": {
+    "max_retries": 3,
+    "retry_delay_seconds": 2,
+    "task_timeout_seconds": 300
+  },
+  "logging": {
+    "level": "INFO",
+    "audit_log_path": "logs/audit.log"
+  }
+}
