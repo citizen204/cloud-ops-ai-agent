@@ -1,23 +1,20 @@
-﻿# cloud-ops-ai-agent
+# cloud-ops-ai-agent
 
 <div align="center">
 
 [![CI — Lint & Test](https://github.com/citizen204/cloud-ops-ai-agent/actions/workflows/python-app.yml/badge.svg)](https://github.com/citizen204/cloud-ops-ai-agent/actions/workflows/python-app.yml)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
-[![Asyncio](https://img.shields.io/badge/Asyncio-Native-00B4D8?style=for-the-badge&logo=python&logoColor=white)](https://docs.python.org/3/library/asyncio.html)
-[![Architecture](https://img.shields.io/badge/Architecture-Event--Driven-6C3483?style=for-the-badge&logo=apacheairflow&logoColor=white)]()
-[![Safety](https://img.shields.io/badge/Safety-3--Phase%20Gateway-E74C3C?style=for-the-badge&logo=shield&logoColor=white)]()
+[![FastAPI](https://img.shields.io/badge/FastAPI-REST%20API-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Threading](https://img.shields.io/badge/Concurrency-Thread%20Pool-6C3483?style=for-the-badge&logo=apacheairflow&logoColor=white)]()
+[![Safety](https://img.shields.io/badge/Safety-High--Risk%20Gateway-E74C3C?style=for-the-badge&logo=shield&logoColor=white)]()
 [![Config](https://img.shields.io/badge/Config-Zero%20Hardcoding-27AE60?style=for-the-badge&logo=json&logoColor=white)]()
-[![Observability](https://img.shields.io/badge/Observability-TraceID%20%7C%20ELK%20Ready-F39C12?style=for-the-badge&logo=elastic&logoColor=white)]()
-[![AWS](https://img.shields.io/badge/AWS-S3%20Log%20Persistence-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white)]()
-[![Prometheus](https://img.shields.io/badge/Metrics-Prometheus%20Format-E6522C?style=for-the-badge&logo=prometheus&logoColor=white)]()
-[![RAG](https://img.shields.io/badge/RAG-Integration%20Ready-8E44AD?style=for-the-badge&logo=openai&logoColor=white)]()
-[![Tests](https://img.shields.io/badge/Tests-56%20passed-brightgreen?style=for-the-badge&logo=pytest&logoColor=white)]()
+[![Tests](https://img.shields.io/badge/Tests-43%20passed-brightgreen?style=for-the-badge&logo=pytest&logoColor=white)]()
+[![Docker](https://img.shields.io/badge/Docker-Compose%20Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white)]()
 [![License](https://img.shields.io/badge/License-MIT-lightgrey?style=for-the-badge)]()
 
 <br/>
 
-> **An experimental framework merging large-scale cloud-phone operational experience from Baidu with modern async AI agent design patterns.**
+> **An industrial-grade cloud operations REST API merging large-scale cloud-phone operational experience from Baidu with modern AI agent design patterns — built for safe, auditable, human-in-the-loop automation.**
 
 </div>
 
@@ -25,420 +22,380 @@
 
 ## Project Vision
 
-`cloud-ops-ai-agent` is not just a task runner — it is an **industrial-grade async execution engine** designed around the operational realities of managing thousands of concurrent virtual devices at scale.
+`cloud-ops-ai-agent` is not just a task runner — it is a **production-ready REST API execution engine** designed around the operational realities of managing cloud infrastructure at scale.
 
-The architecture was directly informed by real-world engineering challenges encountered during an internship on **Baidu's Cloud-Phone (红手指) team**: How do you safely orchestrate destructive operations across a massive device fleet? How do you let an operator abort a rolling update mid-flight without data corruption? How do you make every configuration parameter tunable from a backend dashboard without a single code deploy?
+The architecture was directly informed by real-world engineering challenges encountered during an internship on **Baidu's Cloud-Phone (红手指) team**: How do you safely orchestrate destructive operations across a massive device fleet? How do you let an operator abort a rolling update mid-flight? How do you gate a high-risk action behind human confirmation without blocking the entire server?
 
-This project fuses those hard-won lessons with modern Python asyncio primitives, a three-phase cryptographic safety gateway, and a RAG-ready documentation contract — producing a framework that is ready for both **production cloud operations** and **AI-augmented runbook automation**.
+This project fuses those hard-won lessons with modern Python threading primitives, a two-phase safety gateway, and a FastAPI REST surface — producing a framework ready for both **production cloud operations** and **AI-augmented runbook automation**.
 
 ```
-Baidu Cloud-Phone Scale Ops  ──►  Async Python Engine  ──►  AI Agent Interface
-   (10,000+ devices)               (asyncio + Safety)        (RAG-augmented)
+Baidu Cloud-Phone Scale Ops  ──►  Thread Pool + Safety Gateway  ──►  FastAPI REST  ──►  AI Agent / Operator
+   (10,000+ devices)               (threading.Event / frozenset)       (7 endpoints)       (curl / SDK)
 ```
 
 ---
 
 ## Request Lifecycle: End-to-End Flow
 
-> How does a single operation travel through the engine — from the moment an external caller (or AI agent) submits a `TaskContext`, to the final audited result?
+> How does a single operation travel through the engine — from the moment an external caller submits a `POST /api/v1/tasks`, to the final audited result?
 
 ```mermaid
 flowchart TD
-    A["External Caller / AI Agent\nsubmits TaskContext"] --> B["ExecutionManager.execute()"]
-    B --> C{{"TraceID Assigned\n(UUIDv4)"}}
-    C --> D["CancellationToken\nregistered for trace_id"]
-    D --> E["SafetyGateway.check_operation()"]
+    A["External Caller / AI Agent\nPOST /api/v1/tasks"] --> B["FastAPI Handler\nsubmit_task()"]
+    B --> VAL{"Validate request:\noperation known?\nparams complete?"}
+    VAL -->|"No → HTTP 400/422"| ERR_VAL["Error response\nreturned immediately"]
+    VAL -->|"Yes"| SUBMIT["WebExecutionManager\n.submit_task_async()"]
 
-    E --> P1["Phase 1\nRisk Classification"]
-    P1 -->|"config.get_risk_profile(op)"| P1R{"Risk Level?"}
+    SUBMIT --> REG["Pre-register\nthreading.Event\nfor task_id"]
+    REG --> THREAD["ThreadPoolExecutor\n.submit(_run_task)"]
+    THREAD -->|"returns task_id immediately"| RESP["HTTP 202 Accepted\n{task_id, is_high_risk, status}"]
 
-    P1R -->|"LOW / MEDIUM\n(no verification)"| PASS
-    P1R -->|"HIGH / CRITICAL"| P2
+    THREAD --> WORKER["Worker Thread\nexecute_task()"]
 
-    P2["Phase 2\nIdentity Verification"]
-    P2 -->|"_idp_verify(operator, token)\n+ session cache TTL"| P2R{"Verified?"}
-    P2R -->|"No"| REJECT["IdentityVerificationError\n(non-retryable, logged)"]
-    P2R -->|"Yes"| P2C{"CRITICAL?"}
+    WORKER --> HRCHECK{"High-Risk\nGateway"}
+    HRCHECK -->|"Safe op"| RUN
+    HRCHECK -->|"High-risk op"| AWAIT["Status → AWAITING_CONFIRMATION\nthreading.Event.wait(timeout)"]
 
-    P2C -->|"No (HIGH only)"| PASS
-    P2C -->|"Yes"| P3
+    AWAIT -->|"Operator hits\nPOST .../confirm"| CONFIRM{"confirmed?"}
+    CONFIRM -->|"false"| FAIL["ConfirmationRejectedError\nStatus → FAILED"]
+    CONFIRM -->|"timeout"| TIMEOUT["ConfirmationTimeoutError\nStatus → FAILED"]
+    CONFIRM -->|"true"| RUN
 
-    P3["Phase 3\nMFA Confirmation"]
-    P3 -->|"validate mfa_token"| P3R{"MFA OK?"}
-    P3R -->|"No / Missing"| REJECT
-    P3R -->|"Yes"| COOL["Cooldown\n(risk-level specific)"]
-    COOL --> PASS
+    RUN["Status → RUNNING\naction() called\nwith retry + jitter"] --> RETRY{"Transient\nerror?"}
+    RETRY -->|"attempt < max_retries"| BACKOFF["Exponential backoff\nbase × 2ⁿ + ±10% jitter"] --> RUN
+    RETRY -->|"exhausted / timeout"| FAIL2["Status → FAILED\nerror stored"]
+    RETRY -->|"success"| DONE["Status → COMPLETED\nresult stored"]
 
-    PASS["All Phases Passed"] --> DISP
-
-    DISP["_dispatch(ctx, token)"] --> HANDLER
-
-    HANDLER["@handle_cloud_exceptions\nOp Handler"]
-
-    HANDLER -->|"success"| LOG_OK["Audit Log\ntrace=uuid | TASK DONE\n+ elapsed_ms"]
-    HANDLER -->|"TransientCloudError"| RETRY{"Retry?\nattempt < max"}
-    RETRY -->|"Yes"| BACKOFF["Exponential Backoff\ndelay = base × mult^n + jitter"] --> HANDLER
-    RETRY -->|"Exhausted"| LOG_FAIL
-
-    HANDLER -->|"cancel signal"| CP["raise_if_cancelled()"] --> LOG_CANCEL["Audit Log\ntrace=uuid | TASK CANCELLED\n+ reason"]
-
-    HANDLER -->|"PermanentError"| LOG_FAIL["Audit Log\ntrace=uuid | TASK FAILED"]
-
-    LOG_OK --> CLEANUP["CancellationToken\nremoved from registry"]
-    LOG_CANCEL --> CLEANUP
-    LOG_FAIL --> CLEANUP
-    CLEANUP --> DONE["Result / Error\nreturned to caller"]
+    DONE --> CLEANUP["_cancel_flags.pop()\n_confirmation_events.pop()"]
+    FAIL --> CLEANUP
+    FAIL2 --> CLEANUP
+    TIMEOUT --> CLEANUP
 
     style A fill:#EBF5FB,stroke:#2E86C1
-    style C fill:#FEF9C3,stroke:#D4AC0D
-    style P1 fill:#D5F5E3,stroke:#1E8449
-    style P2 fill:#FDEBD0,stroke:#CA6F1E
-    style P3 fill:#FADBD8,stroke:#922B21
-    style REJECT fill:#F5B7B1,stroke:#CB4335,color:#7B241C
-    style PASS fill:#ABEBC6,stroke:#1E8449,color:#145A32
-    style HANDLER fill:#D6EAF8,stroke:#1A5276
+    style RESP fill:#D5F5E3,stroke:#1E8449
+    style AWAIT fill:#FEF9C3,stroke:#D4AC0D
+    style HRCHECK fill:#FADBD8,stroke:#922B21
+    style CONFIRM fill:#FDEBD0,stroke:#CA6F1E
+    style FAIL fill:#F5B7B1,stroke:#CB4335
+    style TIMEOUT fill:#F5B7B1,stroke:#CB4335
+    style DONE fill:#ABEBC6,stroke:#1E8449
     style BACKOFF fill:#FCF3CF,stroke:#B7950B
-    style LOG_OK fill:#D5F5E3,stroke:#1E8449
-    style LOG_CANCEL fill:#FDEBD0,stroke:#CA6F1E
-    style LOG_FAIL fill:#FADBD8,stroke:#922B21
+    style CLEANUP fill:#D6EAF8,stroke:#1A5276
 ```
 
-The diagram above traces **every decision point** a request encounters. Notice:
+**Key design decisions visible in this diagram:**
 
-- **TraceID is stamped first** — before any business logic, ensuring even gateway rejections are fully auditable.
-- **Short-circuit on failure** — `IdentityVerificationError` is non-retryable and exits immediately; no operation handler is ever invoked.
-- **Retry only wraps the handler** — gateway checks are not repeated on transient retries, avoiding redundant IdP calls.
-- **Cleanup is in `finally`** — the CancellationToken is always deregistered, preventing memory leaks in long-running engine instances.
+- **HTTP 202 immediately** — the thread pool accepts the task and returns the `task_id` before any cloud operation runs. The caller never blocks.
+- **Confirmation via a second HTTP call** — the worker thread sleeps on `threading.Event.wait()`; the `POST .../confirm` endpoint sets the event. No polling loop, no long-poll — just a clean event handshake.
+- **Cleanup in `finally`** — `_cancel_flags` and `_confirmation_events` are always removed after task completion, preventing memory leaks in long-running server instances.
 
 ---
 
 ## Key Architectural Features
 
-### 1. Bounded Concurrency via `asyncio.Semaphore`
+### 1. Non-Blocking Task Submission via Thread Pool
 
-Managing a fleet of virtual phones means launching dozens of operations simultaneously. Unbounded parallelism saturates the orchestration host and causes cascading failures. The engine solves this with a **config-driven semaphore** that creates a precise ceiling on concurrent task slots.
+Every operation runs in a `ThreadPoolExecutor` (16 workers). The HTTP handler returns `task_id` in milliseconds; the actual cloud work happens asynchronously. Callers poll `GET /api/v1/tasks/{task_id}` for results.
 
 ```python
-# Concurrency limit sourced exclusively from config.json — never hard-coded
-self._semaphore = asyncio.Semaphore(config.execution.batch_concurrency_limit)
+# Worker pool — all cloud operations run here, never blocking the HTTP layer
+self._executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=16,
+    thread_name_prefix="cloud-ops-worker",
+)
 
-async def _run_one(idx: int, ctx: TaskContext) -> None:
-    async with self._semaphore:   # blocks here if the slot pool is full
-        outcome = await self.execute(ctx)
+# submit_task_async() returns immediately
+task_id = manager.submit_task_async(
+    operation="deploy_to_production",
+    resource="api-gateway",
+    action=lambda: deploy(service="api-gateway", image="v2.4.0"),
+)
+# → "470d2258-b8df-441d-9304-bd273c91dd9f"  (returned in < 1 ms)
 ```
-
-When `batch_concurrency_limit = 10` (as configured), the 11th device operation queues transparently behind an active slot. This ensures:
-
-- **No thread-pool exhaustion** — all I/O is non-blocking within the event loop.
-- **Predictable memory footprint** — at most N tasks hold open connections simultaneously.
-- **Back-pressure propagation** — slowdowns in the target API naturally throttle the batch rate.
 
 ```mermaid
 flowchart LR
-    subgraph Batch["execute_batch()"]
-        direction TB
-        D0["TaskContext[0]"]
-        D1["TaskContext[1]"]
-        D2["TaskContext[2]"]
-        DN["TaskContext[N]"]
+    subgraph HTTP["FastAPI (main thread)"]
+        H1["POST /api/v1/tasks"] --> RETURN["202 + task_id\n(< 1 ms)"]
     end
 
-    subgraph Semaphore["asyncio.Semaphore(limit=10)"]
-        S1["Slot 1"]
-        S2["Slot 2"]
-        S3["Slot 3"]
-        SD["..."]
-        S10["Slot 10"]
+    subgraph Pool["ThreadPoolExecutor (16 workers)"]
+        W1["Worker 1\ndelete_instance"]
+        W2["Worker 2\nrestart_instance"]
+        W3["Worker 3\ndeploy_to_production\n⏸ AWAITING_CONFIRMATION"]
+        WN["Worker N\n..."]
     end
 
-    subgraph Engine["ExecutionManager.execute()"]
-        GW["SafetyGateway"]
-        DISP["_dispatch()"]
-        HANDLER["Op Handler"]
-    end
-
-    D0 --> S1 --> GW
-    D1 --> S2 --> GW
-    D2 --> S3 --> GW
-    DN -->|queued| SD
-    GW --> DISP --> HANDLER
+    H1 -->|"executor.submit()"| W1
+    H1 -->|"executor.submit()"| W2
+    H1 -->|"executor.submit()"| W3
 ```
 
 ---
 
-### 2. Three-Phase Safety Gateway
+### 2. Two-Phase Safety Gateway
 
-The `SafetyGateway` is the security backbone of the engine, directly modelled on the **account-security and verification mechanisms** designed during the Baidu Cloud-Phone internship. Before any state-changing operation reaches an execution handler, it must pass all applicable phases in strict order.
+Every submitted operation passes through a two-phase check before any side-effecting code runs. The classification is driven entirely by `config.json` — no risk levels are hardcoded.
 
 ```mermaid
 sequenceDiagram
     actor Operator
+    participant API as FastAPI
+    participant WEM as WebExecutionManager
     participant EM as ExecutionManager
-    participant GW as SafetyGateway
-    participant IdP as Identity Provider
-    participant TOTP as MFA Service
-    participant Handler as Op Handler
+    participant Action as Op Handler
 
-    Operator->>EM: execute(TaskContext{op="delete_node", mfa_token="..."})
-    EM->>GW: check_operation("delete_node", ctx)
+    Operator->>API: POST /api/v1/tasks\n{operation: "deploy_to_production", ...}
+    API->>WEM: submit_task_async()
+    WEM->>WEM: pre-register threading.Event
+    WEM->>WEM: executor.submit(_run_task)
+    API-->>Operator: 202 {task_id, is_high_risk: true}
 
-    Note over GW: Phase 1 — Risk Classification
-    GW->>GW: config.get_risk_profile("delete_node") → CRITICAL
+    Note over WEM,EM: Worker thread starts
+    WEM->>EM: execute_task()
+    EM->>EM: Phase 1 — is operation in high_risk_operations?
+    Note over EM: "deploy_to_production" ∈ frozenset → HIGH RISK
 
-    Note over GW: Phase 2 — Identity Verification
-    GW->>IdP: await _idp_verify(operator_id, session_token)
-    IdP-->>GW: verified=True  (cached for session_token_ttl_seconds)
+    EM->>EM: Status → AWAITING_CONFIRMATION
+    EM->>WEM: request_confirmation() — Event.wait(timeout=30s)
 
-    Note over GW: Phase 3 — MFA Confirmation (CRITICAL only)
-    GW->>TOTP: validate mfa_token
-    TOTP-->>GW: confirmed=True
+    Operator->>API: POST /api/v1/tasks/{id}/confirm\n{confirmed: true}
+    API->>WEM: confirm_task(confirmed=True)
+    WEM->>WEM: decisions[task_id] = True; event.set()
+    Note over EM: Event fires — worker unblocks
 
-    Note over GW: Cooldown (10s for CRITICAL)
-    GW-->>EM: all phases passed ✓
+    EM->>EM: Status → RUNNING
+    EM->>Action: action()
+    Action-->>EM: {status: "DEPLOYED", build_id: "build-75450"}
+    EM->>EM: Status → COMPLETED; result stored
 
-    EM->>Handler: _op_delete_node(ctx, token)
-    Handler-->>EM: {"deleted": "node-doom", "status": "ok"}
-    EM-->>Operator: result
+    Operator->>API: GET /api/v1/tasks/{id}
+    API-->>Operator: {status: "COMPLETED", result: {...}}
 ```
 
-| Phase | Trigger | Action on Failure |
-|---|---|---|
-| **1 — Risk Classification** | Every operation | Defaults to `HIGH`; raises `SecurityViolationError` if policy explicitly blocks |
-| **2 — Identity Verification** | `HIGH` + `CRITICAL` ops | Raises `IdentityVerificationError`; op never executed |
-| **3 — MFA Confirmation** | `CRITICAL` ops only | Raises `IdentityVerificationError` if `mfa_token` absent or invalid |
+| Phase | Trigger | Mechanism | On Failure |
+|---|---|---|---|
+| **1 — Risk Classification** | Every operation | Check `op ∈ config.high_risk_operations` (frozenset) | If unknown op: HTTP 400 at submit time |
+| **2 — Confirmation** | High-risk ops only | Worker blocks on `threading.Event`; operator calls `/confirm` | `ConfirmationRejectedError` or `ConfirmationTimeoutError` → status FAILED |
 
-> A session-verification cache (`trace_id → verified_at`) prevents redundant IdP round-trips within the same task's TTL window, balancing security with performance under high-concurrency batch workloads.
+> The `frozenset` makes `high_risk_operations` immutable at runtime — it cannot be modified by a rogue action handler. The `ManagerConfig` dataclass is `frozen=True` for the same reason.
 
 ---
 
-### 3. Zero-Hardcoding Configuration (`AppConfig`)
+### 3. Zero-Hardcoding Configuration (`ManagerConfig`)
 
-Every numerical constant — retry limits, backoff delays, concurrency caps, operation risk classifications, RAG thresholds — lives in a single `config.json` and is parsed once at startup into **frozen, immutable dataclasses**.
+Every numerical constant lives in `config.json` and is parsed once at startup into a **frozen, immutable dataclass**. No component reads a file or environment variable directly after startup.
 
 ```python
-@dataclass(frozen=True)      # immutable after construction — prevents accidental mutation
-class RetryConfig:
-    max_attempts: int
-    base_backoff_seconds: float
-    max_backoff_seconds: float
-    backoff_multiplier: float
-    jitter_factor: float
+@dataclass(frozen=True)      # prevents field reassignment at runtime
+class ManagerConfig:
+    high_risk_operations: frozenset[str]   # immutable — no .add() allowed
+    confirmation_timeout_seconds: float
+    max_retries: int
+    retry_delay_seconds: float
+    task_timeout_seconds: float
 ```
-
-`AppConfig` is constructed once and injected into every component. No component ever reads a file or accesses an environment variable directly — they receive a typed, validated configuration object through their constructor.
 
 ```mermaid
 graph TD
-    CF["config.json"] -->|parsed once| AC["AppConfig"]
-    AC -->|".retry"| RC["RetryConfig (frozen)"]
-    AC -->|".execution"| EC["ExecutionConfig (frozen)"]
-    AC -->|".safety"| SC["SafetyConfig (frozen)"]
-    AC -->|".risk_profiles"| RP["Dict[str, RiskProfile] (frozen)"]
-    AC -->|".rag"| RAG["RagConfig (frozen)"]
+    CF["config.json"] -->|"parsed once at startup"| MC["ManagerConfig\n@dataclass(frozen=True)"]
+    MC -->|"high_risk_operations"| FS["frozenset[str]\n(immutable)"]
+    MC -->|"confirmation_timeout_seconds"| CT["float (30s default)"]
+    MC -->|"max_retries + retry_delay"| RET["Retry policy"]
+    MC -->|"task_timeout_seconds"| TO["Wall-clock deadline"]
 
-    AC -->|injected| EM["ExecutionManager"]
-    AC -->|injected| GW["SafetyGateway"]
-    AC -->|read by| DEC["@handle_cloud_exceptions"]
+    MC -->|"injected"| EM["ExecutionManager"]
+    MC -->|"injected"| WEM["WebExecutionManager"]
 
     style CF fill:#FEF9C3,stroke:#D4AC0D
-    style AC fill:#D5F5E3,stroke:#1E8449
-    style EM fill:#D6EAF8,stroke:#1A5276
-    style GW fill:#FADBD8,stroke:#922B21
+    style MC fill:#D5F5E3,stroke:#1E8449
+    style FS fill:#FADBD8,stroke:#922B21
 ```
 
-To change the retry policy in production, an operator updates `config.json` and restarts the engine — **no code change, no redeploy of business logic**.
+To change retry policy in production: edit `config.json` and restart. No code change, no redeploy of business logic.
 
 ---
 
-### 4. Cooperative Graceful Termination (`CancellationToken`)
+### 4. Cooperative Task Cancellation
 
-Long-running batch operations — like rolling out a firmware update to 10,000 cloud-phone instances — must be stoppable mid-flight without leaving devices in an inconsistent state.
-
-The engine implements this via `CancellationToken`, a cooperative abort mechanism backed by `asyncio.Event`. An operator signals cancellation through `ExecutionManager.cancel_task(trace_id)`; the running coroutine checks the signal at every logical checkpoint via `token.raise_if_cancelled()`.
+Long-running or multi-retry operations expose a cancellation channel. An operator hits `DELETE /api/v1/tasks/{task_id}`; the worker thread checks the flag at every retry boundary via `_check_cancellation()`.
 
 ```python
-for device_id in device_ids:
-    token.raise_if_cancelled()          # high-frequency cancellation_point
-
-    tlog.info("  Updating device '%s' …", device_id)
-    await asyncio.sleep(interval)       # non-blocking per-device API call
-    updated.append(device_id)
+for attempt in range(1, max_attempts + 1):
+    if time.monotonic() >= deadline:
+        raise TaskTimeoutError(task_id=task_id, timeout_seconds=timeout)
+    self._check_cancellation(task_id)   # raises TaskTerminatedError if flagged
+    try:
+        return action()
+    except CloudOpsBaseError:
+        raise
+    except Exception as exc:
+        ...  # retry with jitter
 ```
-
-There is **no `asyncio.Task.cancel()` involved** — the coroutine always reaches a clean checkpoint before raising `TaskCancelledError`. This mirrors the **task-abort confirmation UX** from Baidu's Cloud-Phone management console, where a single abort button gracefully drains the current sub-operation before halting.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> RUNNING : execute(ctx)
-    RUNNING --> CHECKPOINT : raise_if_cancelled()
-    CHECKPOINT --> RUNNING : token.is_cancelled == False
-    CHECKPOINT --> CANCELLED : token.is_cancelled == True
-    CANCELLED --> [*] : raise TaskCancelledError\n(logged with trace_id + reason)
-    RUNNING --> DONE : all devices updated
-    DONE --> [*]
+    [*] --> PENDING : submit_task_async()
+    PENDING --> AWAITING_CONFIRMATION : high-risk op\nworker reaches gate
+    AWAITING_CONFIRMATION --> RUNNING : confirm(true)
+    AWAITING_CONFIRMATION --> FAILED : confirm(false)\nor timeout
+    PENDING --> RUNNING : safe op
+    RUNNING --> RUNNING : retry (transient error)\n+ exponential backoff
+    RUNNING --> COMPLETED : action() returns
+    RUNNING --> FAILED : retries exhausted\nor TaskTimeoutError
+    RUNNING --> TERMINATED : DELETE /tasks/{id}\n_check_cancellation() fires
+    AWAITING_CONFIRMATION --> TERMINATED : DELETE /tasks/{id}\nwhile waiting
 ```
 
 ---
 
-### 5. Industrial-Grade Retry: `@handle_cloud_exceptions`
+### 5. Industrial-Grade Retry with Jitter
 
-A single decorator wraps every operation handler with full retry semantics, sourcing all parameters from `self._config.retry` at call time.
+Transient failures (network blips, throttling) are retried with exponential backoff and ±10% random jitter to prevent correlated retry storms (the **thundering-herd problem**):
 
 ```
-delay(attempt) = min(base × multiplier^(attempt-1), max_backoff) + jitter
+delay(attempt) = min(base × 2^(attempt−1) + jitter, remaining_deadline)
+jitter = delay × 0.1 × random()
 ```
 
-Where `jitter = delay × jitter_factor × random()` — drawn uniformly per attempt to prevent retry storms across concurrent batch tasks (the **thundering-herd problem**).
-
-| Exception Type | Behaviour |
+| Exception type | Behaviour |
 |---|---|
-| `TransientCloudError` | Retried up to `max_attempts` with exponential backoff |
-| `PermanentCloudError` | Propagates immediately — never retried |
-| `TaskCancelledError` | Propagates immediately — cooperative abort honoured |
-| `asyncio.CancelledError` | Re-raised — event-loop contract preserved |
-| Any other `Exception` | Wrapped in `PermanentCloudError` + logged with full traceback |
+| `CloudOpsBaseError` subclass | Propagated immediately — no retry |
+| `TaskTimeoutError` | Wall-clock deadline exceeded — no retry |
+| `TaskTerminatedError` | Operator cancelled — no retry |
+| Any other `Exception` | Retried up to `max_retries` with exponential backoff + jitter |
 
 ---
 
-## Observability: TraceID Full-Chain Tracing
+## Live API Demo
 
-Every task is assigned a **UUIDv4 `trace_id`** at `TaskContext` creation time. This ID propagates through every log line emitted during that task's lifecycle — from SafetyGateway phase transitions to retry attempts to final audit records.
-
-### Live Terminal Output
-
-Below is a real terminal capture from the engine's smoke test, showing four operations of increasing risk — each with its full SafetyGateway phase sequence and TraceID chain:
+> The output below was captured from a live server (`uvicorn cloud_ops_ai_agent.api.main:app`). Every value is real — no mocking.
 
 <div align="center">
 
-<img src="docs/terminal-trace-log.svg" alt="Terminal log showing TraceID full-chain tracing across 4 operations with SafetyGateway Phase 1/2/3" width="100%" />
+<img src="docs/api-demo.svg" alt="Live API demo: health check, list operations, safe task completion, high-risk confirmation workflow" width="100%" />
 
 </div>
 
-<br/>
+**What the demo shows:**
 
-**What to look for in the screenshot above:**
-
-| Colour | Meaning | Example |
+| Step | Endpoint | Key Observation |
 |---|---|---|
-| <span style="color:#50FA7B">Green</span> | `INFO` — normal lifecycle event | `TASK START`, `Phase passed`, `TASK DONE` |
-| <span style="color:#F1FA8C">Yellow</span> | Identity verification initiated | `Phase 2 — identity verify \| risk='high'` |
-| <span style="color:#FF79C6">Pink</span> | CRITICAL operation section header | `=== delete_node (CRITICAL — identity + MFA required) ===` |
-| <span style="color:#FF5555">Red</span> | MFA challenge initiated (Phase 3) | `Phase 3 — MFA confirmation for CRITICAL op.` |
-| <span style="color:#FFB86C">Orange</span> | `WARNING` — cancellation / abort | `CancellationToken activated`, `TASK CANCELLED` |
+| **1** | `GET /health` | Server ready; 8 high-risk operations classified |
+| **2** | `GET /api/v1/operations` | Safe ops run immediately; high-risk ops flagged |
+| **3** | `POST /api/v1/tasks` (safe) | Returns in < 1ms; task runs in background thread |
+| **4** | `GET /api/v1/tasks/{id}` | COMPLETED in ~300ms with full VM inventory result |
+| **5** | `POST /api/v1/tasks` (high-risk) | `is_high_risk: true`; message tells operator to confirm |
+| **6** | Poll → `POST .../confirm` | Status=`AWAITING_CONFIRMATION` until operator approves |
+| **7** | Final poll | `COMPLETED` with real `build_id` proving execution |
 
-**Key observations:**
+---
 
-- **`health_check` (LOW)** — Phase 1 only. No identity check, no cooldown. Cleared instantly.
-- **`restart_node` (HIGH)** — Phase 1 + Phase 2. Identity verification triggered at `timeout=15.0s`, verified, then 3s cooldown applied.
-- **`batch_update_devices` (MEDIUM → cancelled)** — Phase 1 passed, mid-flight `CancellationToken` fired, task aborted at the next `raise_if_cancelled()` checkpoint within ~1s.
-- **`delete_node` (CRITICAL)** — Full 3-phase pipeline: Phase 1 → Phase 2 (identity) → Phase 3 (MFA) → 10s cooldown → handler executes → `TASK DONE` at `elapsed_ms=10309.1`.
+## REST API Reference
 
-Every single line carries the same `trace=f6540d51-…` UUID. A single `grep trace=f6540d51` in Kibana or Grafana Loki reconstructs the **entire operation timeline** with no additional APM instrumentation required.
+Base URL: `http://localhost:8000`  
+Interactive docs: [`/docs`](http://localhost:8000/docs) (Swagger UI) · [`/redoc`](http://localhost:8000/redoc)
+
+| Method | Path | Description | Response |
+|---|---|---|---|
+| `GET` | `/health` | Liveness + high-risk op list | `200 HealthResponse` |
+| `GET` | `/api/v1/operations` | All registered operations with risk classification | `200 list[OperationInfo]` |
+| `POST` | `/api/v1/tasks` | Submit a cloud operation (returns immediately) | `202 SubmitTaskResponse` |
+| `GET` | `/api/v1/tasks` | List all submitted tasks | `200 list[TaskResponse]` |
+| `GET` | `/api/v1/tasks/{task_id}` | Get task status and result | `200 TaskResponse` / `404` |
+| `POST` | `/api/v1/tasks/{task_id}/confirm` | Approve or reject a high-risk task | `200 ConfirmResponse` / `409` |
+| `DELETE` | `/api/v1/tasks/{task_id}` | Send cooperative termination signal | `200 TerminateResponse` / `409` |
+
+**Error codes:**
+
+| Code | Meaning |
+|---|---|
+| `400` | Unknown operation name |
+| `404` | Task ID not found |
+| `409` | Task not in confirmable / terminatable state |
+| `422` | Missing required params for the operation |
+| `503` | Manager not yet initialised (startup race) |
+
+---
+
+## Observability: Full Task Lifecycle Logging
+
+Every task transition emits a structured log line with `task_id` as the correlation key. A single `grep task_id=<uuid>` in any log aggregator (ELK, Loki, CloudWatch) reconstructs the full operation timeline.
+
+```
+2026-06-06 15:33:01 [INFO]  web_execution_manager: Task '470d2258-...' submitted asynchronously.
+2026-06-06 15:33:01 [INFO]  execution_manager:     Task '470d2258-...' AWAITING_CONFIRMATION for 'deploy_to_production'. Timeout: 30s.
+2026-06-06 15:33:04 [INFO]  web_execution_manager: Task '470d2258-...' confirmation confirmed by operator.
+2026-06-06 15:33:08 [INFO]  execution_manager:     Task '470d2258-...' COMPLETED. result={status: DEPLOYED, build_id: build-75450}
+```
 
 ```mermaid
 graph LR
     subgraph Application
-        TC["TaskContext\ntrace_id = uuid4()"]
-        LOG["_trace_logger(trace_id)\nLoggerAdapter"]
-        TC -->|stamped on| LOG
+        LOG["structured log lines\ntask_id = uuid4()"]
     end
-
     subgraph Transport
-        STDOUT["stdout / stderr\n(structured one-liners)"]
+        STDOUT["stdout / file\n(audit_log_path in config)"]
         LOG --> STDOUT
     end
-
     subgraph Aggregation
-        FB["Filebeat / Fluentd"]
+        FB["Filebeat / Fluentd / CloudWatch Agent"]
         STDOUT --> FB
     end
-
     subgraph Query
-        ES["Elasticsearch\n/ Loki"]
-        KB["Kibana / Grafana\ngrep trace=<uuid>"]
+        ES["Elasticsearch / Loki"]
+        KB["Kibana / Grafana\ngrep task_id=<uuid>"]
         FB --> ES --> KB
     end
-
-    style TC fill:#D6EAF8,stroke:#1A5276
+    style LOG fill:#D6EAF8,stroke:#1A5276
     style KB fill:#D5F5E3,stroke:#1E8449
 ```
 
-**Batch operations** use a secondary `batch_id` (8-char UUID prefix) so you can query either the batch-level summary or any individual task within it.
-
 ---
 
-## Cloud-Native Log Persistence (AWS S3)
-
-The engine includes a built-in `S3LogUploader` that automatically persists batch execution audit logs to an S3 bucket after every `execute_batch()` completes. This is integrated with **AWS Academy Learner Lab** for cloud-native observability.
+## Exception Hierarchy
 
 ```mermaid
-flowchart LR
-    EB["execute_batch()\ncompletes"] --> UL["S3LogUploader\n.upload_logs_to_s3()"]
-    UL --> S3["s3://bucket/logs/\n{YYYY/MM/DD}/{batch_id}.json"]
-    S3 --> ATH["Athena / S3 Select\n(date-partitioned queries)"]
+graph TD
+    BASE["CloudOpsBaseError"]
+    BASE --> CFG["ConfigLoadError"]
+    BASE --> TERM["TaskTerminatedError\n(cooperative cancel)"]
+    BASE --> TOUT["TaskTimeoutError\n(wall-clock deadline)"]
+    BASE --> CONF["ConfirmationTimeoutError\n(no response in N seconds)"]
+    BASE --> REJ["ConfirmationRejectedError\n(operator declined)"]
 
-    subgraph Credentials["AWS Academy Learner Lab"]
-        AK["AWS_ACCESS_KEY_ID"]
-        SK["AWS_SECRET_ACCESS_KEY"]
-        ST["AWS_SESSION_TOKEN"]
-    end
-
-    Credentials -->|"os.getenv()  (no hardcoding)"| UL
-
-    style EB fill:#D6EAF8,stroke:#1A5276
-    style S3 fill:#FEF9C3,stroke:#D4AC0D
-    style Credentials fill:#FDEBD0,stroke:#CA6F1E
+    style BASE fill:#D6EAF8,stroke:#1A5276
+    style TERM fill:#FDEBD0,stroke:#CA6F1E
+    style TOUT fill:#FDEBD0,stroke:#CA6F1E
+    style CONF fill:#FADBD8,stroke:#922B21
+    style REJ fill:#FADBD8,stroke:#922B21
 ```
 
-**Key design decisions:**
-
-- **Date-partitioned S3 keys** (`logs/2026/03/05/{batch_id}.json`) — enables efficient Athena queries without full-bucket scans.
-- **Lazy client construction** — `boto3` client is built at call time, picking up refreshed Learner Lab tokens without engine restart.
-- **Graceful degradation** — if `S3_LOG_BUCKET` is not set, upload is silently skipped; the engine never crashes due to missing AWS config.
-- **Thread-pool offload** — blocking `put_object` runs in `run_in_executor` to keep the asyncio event loop non-blocking.
-
-### Credential Verification Script
-
-A health-check utility at `scripts/verify_aws.py` validates Learner Lab credentials before running the engine:
-
-```bash
-python scripts/verify_aws.py
-```
-
-```
-  cloud-ops-ai-agent — AWS Credential Verifier
-  ──────────────────────────────────────────────
-
-  [INFO]  .env 已加载: /path/to/cloud-ops-ai-agent/.env
-  [INFO]  正在验证 AWS STS GetCallerIdentity ...
-
-  [OK]  AWS 凭证有效!
-
-  [INFO]  Account : 300994471550
-  [INFO]  Arn     : arn:aws:sts::300994471550:assumed-role/voclabs/user...
-  [INFO]  Region  : us-east-1
-  [INFO]  S3 Bucket : cloud-ops-ai-agent-logs
-```
-
-If the session token has expired, the script prints step-by-step instructions for refreshing credentials from the Learner Lab console.
+All exceptions derive from `CloudOpsBaseError`, so callers can catch the base type for broad handling or specific subclasses for fine-grained recovery.
 
 ---
 
-## Async Metrics Registry (Prometheus Format)
+## Package Structure
 
-The `MetricsRegistry` singleton (`metrics_collector.py`) automatically tracks operational health in real time, coupled with every `ExecutionManager.execute()` call:
-
-| Metric | Type | Description |
-|---|---|---|
-| `cloudops_tasks_total` | Counter | Total tasks by `{operation, status}` (success / failure / cancelled) |
-| `cloudops_safety_interceptions_total` | Counter | SafetyGateway rejections by `{operation, risk_level}` |
-| `cloudops_task_duration_seconds` | Summary | Execution time with avg / min / max per operation |
-| `cloudops_active_tasks` | Gauge | Currently in-flight tasks |
-| `cloudops_uptime_seconds` | Gauge | Engine uptime since `MetricsRegistry` creation |
-
-```python
-# Retrieve a Prometheus-compatible text exposition at any time
-print(MetricsRegistry.get().to_prometheus_format())
+```
+cloud-ops-ai-agent/
+├── cloud_ops_ai_agent/
+│   ├── __init__.py                 # Public API + version
+│   ├── exceptions.py               # Full exception hierarchy
+│   ├── execution_manager.py        # Core engine: retry, cancel, config
+│   ├── web_execution_manager.py    # HTTP adapter: threading.Event confirmation
+│   ├── mock_operations.py          # Simulated cloud ops (replace with real SDK)
+│   └── api/
+│       ├── main.py                 # FastAPI app factory + 7 endpoints
+│       └── schemas.py              # Pydantic request/response models
+├── tests/
+│   ├── test_execution_manager.py   # 19 unit tests — core engine logic
+│   └── test_api.py                 # 24 integration tests — all 7 endpoints
+├── config.json                     # All tunables (risk list, timeouts, retry policy)
+├── docs/api-demo.svg               # Live API demo (captured from real server)
+├── Dockerfile / docker-compose.yml
+├── dev-requirements.txt
+└── setup.cfg
 ```
 
 ---
@@ -449,194 +406,123 @@ The architectural decisions in this codebase map directly to engineering work de
 
 | Code Module | Internship Deliverable | Evidence |
 |---|---|---|
-| `CancellationToken` + `raise_if_cancelled()` | **任务中止按钮及确认流程** — Designed the operator-facing abort UI and the backend cooperative termination contract that prevented partial device-state corruption during rolling updates | `_op_batch_update_devices` inserts a checkpoint before every device; abort is honoured within one `cancellation_check_interval_seconds` |
-| `AppConfig` + `config.json` + `@dataclass(frozen=True)` | **功能说明可配置化 / 后台可配置方案** — Moved hardcoded operational parameters (timeouts, retry counts, risk thresholds) into a backend-editable configuration layer, enabling ops teams to tune behaviour without code deployments | All 5 sub-configs (`RetryConfig`, `ExecutionConfig`, `SafetyConfig`, `RiskProfile`, `RagConfig`) are frozen dataclasses sourced entirely from `config.json` |
-| `SafetyGateway` (Phase 2 + Phase 3) | **账号安全体系与验证机制** — Implemented the identity-verification and MFA challenge flow that gates destructive account operations (session invalidation, privilege escalation) on the Cloud-Phone platform | Phase 2 calls `_idp_verify` with session-cache TTL; Phase 3 enforces `mfa_token` presence for `CRITICAL` risk ops; `IdentityVerificationError` is non-retryable |
-| `@handle_cloud_exceptions` + `TransientCloudError` | **大规模并发环境下的鲁棒性** — Contributed to the retry and circuit-breaker layer that shielded upstream device APIs from thundering-herd retries during batch reboots | Exponential backoff with per-attempt jitter prevents correlated retries across concurrent batch tasks |
-| `TraceID` + `_trace_logger` | **可追溯性 / 操作审计** — Established structured log correlation for multi-device operations, enabling post-incident tracing across thousands of simultaneous sessions | Every log line carries `trace=<uuid4>`, directly queryable in ELK without additional APM instrumentation |
-
----
-
-## Complete System Architecture
-
-```mermaid
-flowchart TD
-    subgraph External["External Callers / AI Agent / RAG Pipeline"]
-        CLI["CLI / Agent Planner"]
-        RAG["RAG Knowledge Base\n(future: rag_hint injection)"]
-    end
-
-    subgraph Factory["Module Entry Point"]
-        CE["create_engine(config_path)"]
-    end
-
-    subgraph Config["Configuration Layer"]
-        CF["config.json"] --> AC["AppConfig"]
-        AC --> RC["RetryConfig"]
-        AC --> EC["ExecutionConfig"]
-        AC --> SC["SafetyConfig"]
-        AC --> RP["RiskProfiles"]
-        AC --> RAGC["RagConfig"]
-    end
-
-    subgraph Core["Execution Engine"]
-        EM["ExecutionManager\n(orchestrator)"]
-        SEM["asyncio.Semaphore\n(bounded concurrency)"]
-        TOKEN["CancellationToken\n(asyncio.Event)"]
-
-        subgraph Gateway["SafetyGateway"]
-            P1["Phase 1\nRisk Classification"]
-            P2["Phase 2\nIdentity Verify"]
-            P3["Phase 3\nMFA Confirm"]
-            P1 --> P2 --> P3
-        end
-
-        subgraph Handlers["Operation Handlers (@handle_cloud_exceptions)"]
-            H1["_op_delete_node\n⚠ CRITICAL"]
-            H2["_op_restart_node\n🔶 HIGH"]
-            H3["_op_batch_update_devices\n🔷 MEDIUM"]
-            H4["_op_health_check\n✅ LOW"]
-            H5["_op_generic\n(fallback)"]
-        end
-    end
-
-    subgraph Exceptions["Exception Hierarchy"]
-        CE2["CloudOpsError"]
-        TE["TransientCloudError\n(retryable)"]
-        PE["PermanentCloudError"]
-        SE["SecurityViolationError"]
-        IE["IdentityVerificationError"]
-        TCE["TaskCancelledError"]
-        CE2 --> TE
-        CE2 --> PE --> SE --> IE
-        CE2 --> TCE
-    end
-
-    subgraph Observability["Observability"]
-        TLOG["_trace_logger\n(UUIDv4 per task)"]
-        ELK["ELK / Loki\n(structured grep)"]
-        MR["MetricsRegistry\n(Prometheus format)"]
-        TLOG --> ELK
-    end
-
-    subgraph Cloud["AWS Cloud (Learner Lab)"]
-        S3UL["S3LogUploader\n(async, boto3)"]
-        S3B["S3 Bucket\nlogs/{date}/{batch}.json"]
-        S3UL --> S3B
-    end
-
-    CLI -->|TaskContext| CE --> EM
-    RAG -.->|rag_hint| CE
-    AC -->|injected| EM
-    AC -->|injected| Gateway
-    EM --> SEM --> Gateway
-    Gateway --> Handlers
-    EM --> TOKEN
-    TOKEN -.->|raise_if_cancelled| Handlers
-    Handlers --> TLOG
-    EM --> TLOG
-    EM -->|"record_*"| MR
-    EM -->|batch done| S3UL
-
-    style H1 fill:#FADBD8,stroke:#922B21
-    style H2 fill:#FDEBD0,stroke:#CA6F1E
-    style H3 fill:#D6EAF8,stroke:#1A5276
-    style H4 fill:#D5F5E3,stroke:#1E8449
-    style Gateway fill:#F9EBEA,stroke:#922B21
-    style Config fill:#FDFEFE,stroke:#AAB7B8
-    style S3B fill:#FEF9C3,stroke:#D4AC0D
-    style MR fill:#FADBD8,stroke:#E6522C
-```
+| `WebExecutionManager.request_confirmation()` + `threading.Event` | **任务中止按钮及确认流程** — Designed the operator-facing abort UI and the backend cooperative termination contract that prevented partial device-state corruption during rolling updates | Worker thread blocks on `Event.wait(timeout=30s)`; `POST .../confirm` sets the event and unblocks the worker. The event-based handshake mirrors the confirmation flow from the Cloud-Phone management console |
+| `ManagerConfig` + `@dataclass(frozen=True)` + `frozenset` | **功能说明可配置化 / 后台可配置方案** — Moved hardcoded operational parameters into a backend-editable configuration layer, enabling ops teams to tune behaviour without code deployments | All risk classification, timeouts, and retry policy sourced exclusively from `config.json`; `frozen=True` + `frozenset` prevent runtime mutation by any handler |
+| `high_risk_operations` gateway + `ConfirmationRejectedError` | **账号安全体系与验证机制** — Implemented the verification flow that gates destructive account operations on the Cloud-Phone platform | Two-phase safety gateway: Phase 1 classifies risk via frozenset lookup, Phase 2 blocks until human confirmation. `ConfirmationRejectedError` is non-retryable — rejected ops never execute |
+| `_execute_with_retry` + jitter | **大规模并发环境下的鲁棒性** — Contributed to the retry layer that shielded upstream device APIs from thundering-herd retries during batch reboots | Exponential backoff with ±10% per-attempt jitter prevents correlated retries across 16 concurrent workers hitting the same upstream API |
+| `_cancel_flags` + `_check_cancellation()` | **可追溯性 / 操作审计** + **任务终止** — Established structured log correlation and the cooperative abort mechanism for multi-device operations | Every log line carries `task_id`; `DELETE /tasks/{id}` sets a flag checked at every retry boundary — abort honoured within one retry cycle, never mid-operation |
+| `list_task_records()` public API | **封装 / 接口设计** — Replaced direct registry access with a public method that acquires the registry lock internally | External code never holds `_registry_lock` directly; thread safety is fully encapsulated in the manager |
 
 ---
 
 ## Quick Start
 
+### Local (Python)
+
 ```bash
-# Clone and navigate
 git clone https://github.com/citizen204/cloud-ops-ai-agent.git
 cd cloud-ops-ai-agent
 
-# Production only (minimal footprint for deployment)
 pip install -r requirements.txt
+uvicorn cloud_ops_ai_agent.api.main:app --reload
 
-# Development / CI (adds pytest, flake8, black, mypy, ruff)
-pip install -r dev-requirements.txt
-
-# Configure AWS credentials (Learner Lab)
-cp .env.example .env
-# → Fill in AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN
-# → See .env.example for step-by-step instructions
-
-# Verify AWS credentials are valid
-python scripts/verify_aws.py
-
-# Create the S3 log bucket (one-time setup)
-aws s3 mb s3://cloud-ops-ai-agent-logs --region us-east-1
-
-# Run the built-in smoke test (validates full pipeline end-to-end)
-python execution_manager.py
-
-# Run the full test suite
-pytest tests/ -v
+# API live at http://localhost:8000
+# Swagger UI:  http://localhost:8000/docs
 ```
 
-**Example: Programmatic usage**
+### Docker
 
-```python
-import asyncio
-from execution_manager import create_engine, TaskContext
+```bash
+docker compose up --build
+# Server starts on http://localhost:8000
+```
 
-async def main():
-    engine = create_engine()          # reads config.json automatically
+### curl Walkthrough
 
-    # LOW risk — no verification required
-    result = await engine.execute(
-        TaskContext(
-            operation="health_check",
-            operator_id="sre-alice",
-            session_token="<bearer-token>",
-        )
-    )
+```bash
+# 1. Health check
+curl http://localhost:8000/health
 
-    # CRITICAL risk — identity + MFA required
-    result = await engine.execute(
-        TaskContext(
-            operation="delete_node",
-            payload={"node_id": "node-007"},
-            operator_id="admin-bob",
-            session_token="<bearer-token>",
-            mfa_token="<totp-code>",
-        )
-    )
+# 2. List available operations
+curl http://localhost:8000/api/v1/operations | jq '.[] | {name, risk}'
 
-asyncio.run(main())
+# 3. Submit a safe task (runs immediately in background)
+TASK=$(curl -s -X POST http://localhost:8000/api/v1/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"operation":"list_instances","resource":"all","params":{}}' \
+  | jq -r .task_id)
+curl http://localhost:8000/api/v1/tasks/$TASK   # poll until COMPLETED
+
+# 4. Submit a HIGH-RISK task (pauses for confirmation)
+TASK=$(curl -s -X POST http://localhost:8000/api/v1/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"operation":"deploy_to_production","resource":"api-gateway",
+       "params":{"service_name":"api-gateway","image_tag":"v2.4.0"}}' \
+  | jq -r .task_id)
+curl http://localhost:8000/api/v1/tasks/$TASK   # status: AWAITING_CONFIRMATION
+
+# 5. Approve the operation
+curl -X POST http://localhost:8000/api/v1/tasks/$TASK/confirm \
+  -H 'Content-Type: application/json' \
+  -d '{"confirmed": true}'
+curl http://localhost:8000/api/v1/tasks/$TASK   # status: COMPLETED
+
+# 6. Terminate a running task at any time
+curl -X DELETE http://localhost:8000/api/v1/tasks/$TASK
+```
+
+---
+
+## Running Tests
+
+```bash
+pip install -r dev-requirements.txt
+
+pytest tests/ -v                        # all 43 tests
+pytest tests/test_execution_manager.py  # 19 unit tests (core engine)
+pytest tests/test_api.py                # 24 integration tests (all endpoints)
+pytest tests/ --cov=cloud_ops_ai_agent  # with coverage report
 ```
 
 ---
 
 ## Configuration Reference
 
-All tunables live in `config.json`. Key sections:
+All tunables live in `config.json`. The file is parsed once at startup into `ManagerConfig(frozen=True)`.
 
-| Section | Key Fields | Purpose |
+| Key | Default | Purpose |
 |---|---|---|
-| `execution` | `batch_concurrency_limit`, `cancellation_check_interval_seconds` | Semaphore size; abort checkpoint frequency |
-| `retry` | `max_attempts`, `base_backoff_seconds`, `backoff_multiplier`, `jitter_factor` | Exponential backoff policy |
-| `safety_gateway` | `identity_verification_timeout_seconds`, `session_token_ttl_seconds` | IdP call timeout; session cache TTL |
-| `risk_levels` | Per-level `operations[]`, `requires_identity_verification`, `requires_mfa` | Operation classification and gate policy |
-| `rag_integration` | `enabled`, `knowledge_base_url`, `top_k_results` | Future RAG context injection |
+| `high_risk_operations` | `["delete_instance", ...]` | Operations requiring human confirmation before execution |
+| `confirmation.timeout_seconds` | `30` | Seconds the worker waits for `POST .../confirm` before failing |
+| `execution.max_retries` | `3` | Maximum retry attempts for transient failures |
+| `execution.retry_delay_seconds` | `2` | Base delay for exponential backoff (actual = base × 2ⁿ + jitter) |
+| `execution.task_timeout_seconds` | `300` | Wall-clock deadline — task fails if total time exceeds this |
+| `logging.audit_log_path` | `logs/audit.log` | File path for structured audit logs |
+
+**Environment variables:**
+
+| Variable | Purpose |
+|---|---|
+| `CONFIG_PATH` | Override config file location (default: `config.json`) |
+| `CORS_ORIGINS` | Comma-separated allowed origins (default: `*`) |
 
 ---
 
 ## Roadmap
 
-- [x] **Prometheus Metrics** — `MetricsRegistry` singleton exposes `tasks_total`, `task_duration_seconds`, `safety_interceptions_total` as Prometheus-format counters/summaries.
-- [x] **AWS S3 Log Persistence** — `S3LogUploader` auto-uploads batch audit logs to S3 with date-partitioned keys, integrated with AWS Academy Learner Lab session tokens.
-- [ ] **RAG Integration** — Inject `rag_hint` context from a vector knowledge base into `TaskContext` before dispatch, enabling AI-guided operation selection and parameter validation.
-- [ ] **Circuit Breaker** — Wrap each operation handler with a per-target circuit breaker to prevent retries from amplifying a downstream outage.
-- [ ] **OpenTelemetry Spans** — Propagate `trace_id` as an OTLP trace context for distributed tracing across microservice boundaries.
-- [ ] **gRPC Transport Adapter** — Replace mock `_idp_verify` and `_op_*` stubs with real gRPC service bindings.
+- [x] **Two-phase safety gateway** — `high_risk_operations` frozenset + `threading.Event` confirmation workflow
+- [x] **FastAPI REST API** — 7 endpoints with Pydantic validation, auto-generated Swagger UI and ReDoc
+- [x] **Cooperative cancellation** — `DELETE /tasks/{id}` sets a flag checked at every retry boundary
+- [x] **Exponential backoff with jitter** — thundering-herd mitigation for transient failures
+- [x] **Wall-clock deadline enforcement** — `task_timeout_seconds` enforced via `TaskTimeoutError`
+- [x] **Immutable config** — `ManagerConfig(frozen=True)` + `frozenset` prevent runtime mutation
+- [x] **Memory-safe cleanup** — `_cancel_flags` and `_confirmation_events` pruned in `finally` blocks
+- [x] **Full test suite** — 19 unit tests (core engine) + 24 API integration tests (all 7 endpoints)
+- [ ] **Authentication** — API key or JWT middleware for operator identity verification
+- [ ] **Webhook callbacks** — push task completion events to a caller URL instead of polling
+- [ ] **RAG Integration** — inject `rag_hint` context from a vector knowledge base into task submission
+- [ ] **Circuit Breaker** — per-operation circuit breaker to prevent retry amplification during outages
+- [ ] **OpenTelemetry** — propagate `task_id` as OTLP trace context for distributed tracing
 
 ---
 
