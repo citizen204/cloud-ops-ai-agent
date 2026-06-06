@@ -25,7 +25,7 @@ from cloud_ops_ai_agent.exceptions import (
     TaskTerminatedError,
     TaskTimeoutError,
 )
-from cloud_ops_ai_agent.execution_manager import ExecutionManager, TaskStatus
+from cloud_ops_ai_agent.execution_manager import ExecutionManager
 
 
 # ---------------------------------------------------------------------------

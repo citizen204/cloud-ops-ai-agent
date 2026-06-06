@@ -46,7 +46,8 @@ logger = logging.getLogger(__name__)
 
 _APP_VERSION = "0.1.0"
 _CONFIG_PATH = os.getenv("CONFIG_PATH", "config.json")
-_CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "").split(",") if os.getenv("CORS_ORIGINS") else ["*"]
+_cors_env = os.getenv("CORS_ORIGINS")
+_CORS_ORIGINS: list[str] = _cors_env.split(",") if _cors_env else ["*"]
 
 # Module-level manager instance (initialised in lifespan).
 _manager: WebExecutionManager | None = None
